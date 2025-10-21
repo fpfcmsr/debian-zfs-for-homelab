@@ -21,6 +21,12 @@ grub-efi-amd64
 shim-signed
 efivar
 
+# Live boot plumbing (early + late userspace for live systems)
+# With --apt-recommends=false we must include these explicitly.
+live-boot
+live-config
+live-config-systemd
+
 # Useful storage tools
 nvme-cli
 lsscsi
