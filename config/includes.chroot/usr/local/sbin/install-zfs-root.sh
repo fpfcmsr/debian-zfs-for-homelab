@@ -346,13 +346,14 @@ zfs snapshot rpool/ROOT/debian@install || true
 CHROOT
 chmod +x "$LIVE_MNT/root/post-chroot.sh"
 
-# Pass variables into chroot
+# Pass variables incl. new MOK data into chroot
 chroot "$LIVE_MNT" /usr/bin/env \
   DISK1_ID="$DISK1_ID" DISK2_ID="$DISK2_ID" \
   HOSTNAME="$HOSTNAME" TIMEZONE="$TIMEZONE" LOCALE="$LOCALE" \
   BOOT_MODE="$BOOT_MODE" CREATE_SWAP="$CREATE_SWAP" SWAP_SIZE="$SWAP_SIZE" \
   USERNAME="$USERNAME" USER_PASSWORD="$USER_PASSWORD" \
   TPM2_PCRS="$TPM2_PCRS" LUKS_PASSPHRASE="$LUKS_PASSPHRASE" \
+  MOK_CN="$MOK_CN" MOK_PASS="$MOK_PASS" \
   bash -eux /root/post-chroot.sh
 
 # Mirror ESP to second disk (UEFI)
