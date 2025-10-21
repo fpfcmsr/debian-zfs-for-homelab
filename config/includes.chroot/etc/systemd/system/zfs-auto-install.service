@@ -1,18 +1,23 @@
 [Unit]
 Description=Automated ZFS-on-root installer (DESTRUCTIVE)
-After=network-online.target local-fs.target
+After=local-fs.target network-online.target
 Wants=network-online.target
 ConditionKernelCommandLine=zfs.auto=1
+# Make sure we own tty1 so prompts are not interleaved with agetty
+Conflicts=getty@tty1.service
 
 [Service]
-Type=simple
-Environment=DEBIAN_FRONTEND=noninteractive
-ExecStart=/usr/local/sbin/install-zfs-root.sh
+Type=idle
+# Present a real TTY to the process so `read` prompts work
+StandardInput=tty
 StandardOutput=journal+console
 StandardError=journal+console
 TTYPath=/dev/tty1
 TTYReset=yes
-RemainAfterExit=yes
+Environment=DEBIAN_FRONTEND=noninteractive
+ExecStart=/usr/local/sbin/install-zfs-root.sh
+RemainAfterExit=no
+Restart=no
 
 [Install]
 WantedBy=multi-user.target
