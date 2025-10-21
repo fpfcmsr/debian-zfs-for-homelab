@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ensure prompts are visible on tty1 (we're started by systemd)
-exec </dev/tty1 >/dev/tty1 2>&1 || true
+# Ensure we really have an interactive TTY; if not, bind to tty1.
+# (The unit now sets StandardInput=tty/TTYPath, but keep this as a belt-and-suspenders.)
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+  exec </dev/tty1 >/dev/tty1 2>&1 || true
+fi
+# Fail fast if we still have no TTY (prevents running headless with empty inputs)
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+  echo "No interactive TTY available for prompts (need tty1). Aborting."
+  exit 1
+fi
 
 # ========= Defaults (overridable via kernel cmdline) =========
 HOSTNAME="${HOSTNAME:-debian}"
