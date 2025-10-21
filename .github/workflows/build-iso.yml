@@ -18,7 +18,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: debian:bookworm
+      image: debian:trixie
       options: --privileged   # live-build needs mount capabilities
     steps:
       - name: Checkout

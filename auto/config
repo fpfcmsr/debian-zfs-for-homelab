@@ -4,7 +4,7 @@ set -e
 # See: Debian Live Manual, "Use example auto scripts" — add 'noauto' to avoid recursion.
 # lb build/lb config will run auto/config automatically; this wrapper resets options cleanly.
 lb config noauto \
-  --distribution bookworm \
+  --distribution trixie \
   --architectures amd64 \
   --binary-images iso-hybrid \
   --debian-installer false \
