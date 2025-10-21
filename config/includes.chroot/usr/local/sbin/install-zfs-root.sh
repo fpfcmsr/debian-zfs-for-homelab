@@ -249,6 +249,47 @@ if [ -f /etc/ssh/sshd_config ]; then
   sed -ri 's/^\s*#?\s*PermitRootLogin\s+.*/PermitRootLogin no/' /etc/ssh/sshd_config
 fi
 
+# ---- Secure Boot – create MOK, configure DKMS, enroll key ----
+# DKMS will auto-sign modules when mok_signing_key & mok_certificate are set in framework.conf.
+# Default MOK location per Debian: /var/lib/dkms/ (we use MOK.key + MOK.der)
+MOK_DIR=/var/lib/dkms
+MOK_KEY="$MOK_DIR/MOK.key"
+MOK_DER="$MOK_DIR/MOK.der"
+install -d -m 0755 "$MOK_DIR"
+
+if [ ! -f "$MOK_KEY" ] || [ ! -f "$MOK_DER" ]; then
+  # Create self-signed X.509 (PEM key + DER cert) with CN=$MOK_CN
+  openssl req -new -x509 -newkey rsa:2048 \
+    -keyout "$MOK_KEY" -outform DER -out "$MOK_DER" \
+    -nodes -days 36500 -subj "/CN=$MOK_CN/"
+  chmod 600 "$MOK_KEY"
+fi
+
+# Teach DKMS where the key/cert live (these vars are respected by DKMS on Debian)
+grep -q '^mok_signing_key=' /etc/dkms/framework.conf 2>/dev/null \
+  && sed -i "s|^mok_signing_key=.*|mok_signing_key=$MOK_KEY|" /etc/dkms/framework.conf \
+  || echo "mok_signing_key=$MOK_KEY" >> /etc/dkms/framework.conf
+
+grep -q '^mok_certificate=' /etc/dkms/framework.conf 2>/dev/null \
+  && sed -i "s|^mok_certificate=.*|mok_certificate=$MOK_DER|" /etc/dkms/framework.conf \
+  || echo "mok_certificate=$MOK_DER" >> /etc/dkms/framework.conf
+
+# Enroll the certificate with shim's MOK. This schedules enrollment at next boot (blue screen).
+# mokutil reads the password twice; we feed it non-interactively.
+if mokutil --list-enrolled 2>/dev/null | grep -qi "$MOK_CN"; then
+  echo "MOK '$MOK_CN' already enrolled (or similar)."
+else
+  mokutil --import "$MOK_DER" <<EOF || true
+$MOK_PASS
+$MOK_PASS
+EOF
+  # Note: you MUST confirm this enrollment at next boot in the MOK manager.
+fi
+
+# Rebuild/Sign ZFS DKMS module and initramfs
+dpkg-reconfigure -f noninteractive zfs-dkms || true
+update-initramfs -u -k all
+
 # ---- TPM2 auto-unlock: systemd-cryptenroll preferred; clevis fallback ----
 apt install -y tpm2-tools clevis clevis-luks clevis-tpm2 clevis-initramfs
 
@@ -284,7 +325,7 @@ EOCR
   update-initramfs -u -k all
 fi
 
-# GRUB & initramfs
+# GRUB & initramfs (UEFI uses signed GRUB)
 grub-probe /boot || true
 update-initramfs -c -k all
 sed -i 's/^GRUB_CMDLINE_LINUX=.*/GRUB_CMDLINE_LINUX="root=ZFS=rpool\\/ROOT\\/debian"/' /etc/default/grub
