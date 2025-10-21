@@ -1,0 +1,61 @@
+# Minimal, text-only live system with ZFS tooling (no GUI)
+
+# Kernel & headers for DKMS modules inside the live env
+linux-image-amd64
+linux-headers-amd64
+dkms
+build-essential
+
+# ZFS in the live environment
+zfsutils-linux
+zfs-initramfs
+zfs-dkms
+
+# Partitioning, crypto, boot
+gdisk
+parted
+cryptsetup
+dosfstools
+efibootmgr
+grub-efi-amd64
+shim-signed
+grub-pc
+efivar
+
+# Useful storage tools
+nvme-cli
+lsscsi
+smartmontools
+kmod
+
+# TPM2 / Clevis tooling available in live env too (handy for debugging)
+tpm2-tools
+clevis
+clevis-luks
+clevis-tpm2
+clevis-initramfs
+
+# Core utilities (no desktop)
+locales
+keyboard-configuration
+console-setup
+openssh-server
+sudo
+curl
+wget
+ca-certificates
+vim-tiny
+less
+systemd-timesyncd
+
+# For testing containers & cockpit later (also installed to target by script)
+cockpit
+cockpit-podman
+podman
+uidmap
+slirp4netns
+fuse-overlayfs
+
+# Intel CPU/GPU microcode/firmware
+intel-microcode
+firmware-misc-nonfree
