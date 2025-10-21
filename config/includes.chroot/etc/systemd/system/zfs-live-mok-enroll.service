@@ -1,8 +1,10 @@
 [Unit]
-Description=Live ISO Secure Boot: enroll MOK for ZFS if needed (may reboot once)
+Description=Live ISO Secure Boot: enroll MOK for ZFS if needed (may schedule reboot)
 DefaultDependencies=yes
-After=basic.target
+After=basic.target local-fs.target systemd-udevd.service
 Before=zfs-auto-install.service
+# Only bother on UEFI systems
+ConditionPathExists=/sys/firmware/efi
 
 [Service]
 Type=oneshot
@@ -10,6 +12,9 @@ StandardOutput=journal+console
 StandardError=journal+console
 Environment=DEBIAN_FRONTEND=noninteractive
 ExecStart=/usr/local/sbin/live-mok-enroll.sh
+# Even if the script exits non-zero, treat it as success to avoid blocking boot
+SuccessExitStatus=0 1 2 3 4 5
+RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target

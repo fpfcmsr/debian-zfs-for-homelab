@@ -3,6 +3,8 @@ Description=Automated ZFS-on-root installer (DESTRUCTIVE)
 Wants=network-online.target zfs-live-mok-enroll.service
 After=local-fs.target network-online.target zfs-live-mok-enroll.service
 ConditionKernelCommandLine=zfs.auto=1
+# If MOK reboot is pending, do not start the installer yet
+ConditionPathExists=!/run/zfs-live-mok-reboot
 # Make sure we own tty1 so prompts are not interleaved with agetty
 Conflicts=getty@tty1.service
 
