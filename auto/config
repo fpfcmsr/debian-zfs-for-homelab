@@ -1,10 +1,14 @@
 #!/bin/sh
 set -e
-lb config \
+
+# See: Debian Live Manual, "Use example auto scripts" — add 'noauto' to avoid recursion.
+# lb build/lb config will run auto/config automatically; this wrapper resets options cleanly.
+lb config noauto \
   --distribution bookworm \
   --architectures amd64 \
   --binary-images iso-hybrid \
   --debian-installer false \
   --archive-areas "main contrib non-free non-free-firmware" \
   --apt-recommends false \
-  --bootappend-live "zfs.auto=1 console=tty0"
+  --bootappend-live "zfs.auto=1 console=tty0" \
+  "${@}"
