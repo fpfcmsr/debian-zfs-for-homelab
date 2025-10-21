@@ -19,7 +19,6 @@ dosfstools
 efibootmgr
 grub-efi-amd64
 shim-signed
-grub-pc
 efivar
 
 # Useful storage tools
