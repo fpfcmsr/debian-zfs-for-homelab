@@ -13,6 +13,10 @@ CREATE_SWAP="${CREATE_SWAP:-no}"
 SWAP_SIZE="${SWAP_SIZE:-4G}"
 TPM2_PCRS_DEFAULT="7"   # conservative default
 
+# Secure Boot (MOK) defaults
+MOK_CN_DEFAULT="debian-zfs"
+MOK_PASS_DEFAULT="debian-zfs"
+
 # ========= Helpers =========
 log(){ echo -e "\n>>> $*\n"; }
 karg(){ awk -v FS="[ =]" -v K="$1" '{for(i=1;i<=NF;i++) if($i==K){print $(i+1); exit}}' /proc/cmdline 2>/dev/null || true; }
@@ -41,6 +45,15 @@ if [ -z "$USERNAME" ]; then
 fi
 [ -n "$USER_PASSWORD" ] || confirm_match USER_PASSWORD "Admin user password" yes
 [ -n "$LUKS_PASSPHRASE" ] || confirm_match LUKS_PASSPHRASE "LUKS passphrase (recovery)" yes
+
+# ========= Secure Boot prompts =========
+MOK_CN="$(first_or_default zfs.mok_cn "$MOK_CN_DEFAULT")"
+MOK_PASS="$(first_or_default zfs.mok_pass "")"
+read -r -p "MOK label (CN) for Secure Boot module signing [${MOK_CN_DEFAULT}]: " _x || true
+[ -n "${_x:-}" ] && MOK_CN="$_x"
+if [ -z "$MOK_PASS" ]; then
+  confirm_match MOK_PASS "MOK enrollment password (for Secure Boot)" yes
+fi
 
 log "Starting destructive install on two SSDs"
 
@@ -163,9 +176,10 @@ echo 'REMAKE_INITRD=yes' > /etc/dkms/zfs.conf
 UUID1=$(blkid -s UUID -o value ${DISK1_ID}-part4)
 UUID2=$(blkid -s UUID -o value ${DISK2_ID}-part4)
 
-# Bootloader packages & ESP
+# UEFI / BIOS boot loader packages & ESP
 if [ "$BOOT_MODE" = "uefi" ]; then
-  apt install -y dosfstools efibootmgr grub-efi-amd64 shim-signed
+  # install signed GRUB + shim for Secure Boot
+  apt install -y dosfstools efibootmgr shim-signed grub-efi-amd64-signed mokutil openssl
   mkdosfs -F 32 -n EFI ${DISK1_ID}-part2
   mkdir -p /boot/efi
   UUID_ESP=$(blkid -s UUID -o value ${DISK1_ID}-part2)
@@ -173,6 +187,8 @@ if [ "$BOOT_MODE" = "uefi" ]; then
   mount /boot/efi
 else
   apt install -y grub-pc
+  # Still install mokutil/openssl in case firmware is later switched to UEFI
+  apt install -y mokutil openssl
 fi
 
 # zfs-list.cache + import guard for bpool
