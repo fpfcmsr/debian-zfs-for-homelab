@@ -1,4 +1,4 @@
-# Debian 12 ZFS Autoinstall ISO (two-SSD mirror, LUKS, TPM2 auto-unlock)
+# Debian Trixie ZFS Autoinstall ISO (two-SSD mirror, LUKS, TPM2 auto-unlock)
 
 This repo builds a **text-only Debian 12 (trixie) Live ISO** that **automatically installs**:
 - ZFS on root with **two-disk mirror** (bpool unencrypted, rpool in **LUKS**)
