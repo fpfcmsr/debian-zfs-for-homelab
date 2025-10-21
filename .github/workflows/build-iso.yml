@@ -1,7 +1,8 @@
 name: Build ZFS Autoinstall ISO
 
 on:
-  schedule: [{ cron: "0 3 1 * *" }]   # monthly, 03:00 UTC on the 1st
+  schedule:
+    - cron: "0 3 1 * *"   # monthly on the 1st at 03:00 UTC
   workflow_dispatch: {}
   push:
     paths:
@@ -11,15 +12,15 @@ on:
       - "build.sh"
       - "README.md"
 
+permissions:
+  contents: write   # needed to create a Release
+
 jobs:
   build:
     runs-on: ubuntu-latest
     container:
       image: debian:bookworm
-      # Needed so live-build can mount devpts/proc/loop, etc.
-      options: --privileged
-      # optional niceties; not strictly required:
-      # options: --privileged --security-opt seccomp=unconfined
+      options: --privileged   # live-build needs mount capabilities
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,33 +37,53 @@ jobs:
         run: |
           chmod +x auto/config
           lb clean --purge || true
-          lb config     # auto/config contains 'noauto' (see below)
+          lb config     # your auto/config must use 'noauto'
 
       - name: Build ISO
         run: |
           lb build 2>&1 | tee build.log
+          test -f live-image-amd64.hybrid.iso
 
-      - name: Upload ISO
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: zfs-autoinstall-iso-${{ github.run_number }}
           path: |
             live-image-amd64.hybrid.iso
             build.log
-          retention-days: 30
+          retention-days: 14
 
-      - name: Prepare monthly tag
-        if: github.event_name == 'schedule'
+      - name: Make timestamp for tag/name
+        if: success()
+        id: ts
         run: |
-          echo "TAG=monthly-$(date -u +%Y%m)" >> $GITHUB_ENV
-          echo "RELNAME=Monthly ISO $(date -u +%Y-%m-%d)" >> $GITHUB_ENV
+          # Use UTC so tags are predictable and sortable.
+          TS="$(date -u +'%Y-%m-%d_%H-%M-%SZ')"
+          echo "ts=${TS}" >> "$GITHUB_OUTPUT"
+          echo "tag=iso-${TS}" >> "$GITHUB_OUTPUT"
+          echo "name=ZFS Autoinstall ISO ${TS}" >> "$GITHUB_OUTPUT"
 
-      - name: Monthly release
-        if: github.event_name == 'schedule'
+      - name: Create GitHub Release (on every successful build)
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.TAG }}
-          name: ${{ env.RELNAME }}
-          files: live-image-amd64.hybrid.iso
+          tag_name: ${{ steps.ts.outputs.tag }}
+          name: ${{ steps.ts.outputs.name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          body: |
+            Automated build from workflow **${{ github.workflow }}**
+            - Run #: ${{ github.run_number }}
+            - Commit: ${{ github.sha }}
+            - Branch/Ref: ${{ github.ref }}
+            - Timestamp (UTC): ${{ steps.ts.outputs.ts }}
+
+            Files:
+            - `live-image-amd64.hybrid.iso`
+            - `build.log`
+          files: |
+            live-image-amd64.hybrid.iso
+            build.log
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
