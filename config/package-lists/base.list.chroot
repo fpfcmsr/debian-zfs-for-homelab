@@ -47,6 +47,10 @@ vim-tiny
 less
 systemd-timesyncd
 
+#secureboot
+mokutil
+openssl
+
 # For testing containers & cockpit later (also installed to target by script)
 cockpit
 cockpit-podman
