@@ -1,0 +1,65 @@
+name: Build ZFS Autoinstall ISO
+
+on:
+  schedule:
+    - cron: "0 3 1 * *"       # run monthly on the 1st at 03:00 UTC
+  workflow_dispatch: {}       # allow manual runs
+  push:
+    paths:
+      - "auto/**"
+      - "config/**"
+      - ".github/workflows/build-iso.yml"
+      - "build.sh"
+      - "README.md"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:bookworm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            live-build debootstrap cdebootstrap \
+            squashfs-tools xorriso syslinux-common \
+            dosfstools ca-certificates git
+
+      - name: Configure live-build
+        run: |
+          chmod +x auto/config
+          lb clean --purge || true
+          lb config
+
+      - name: Build ISO
+        run: |
+          lb build 2>&1 | tee build.log
+
+      - name: Upload ISO as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zfs-autoinstall-iso-${{ github.run_number }}
+          path: |
+            live-image-amd64.hybrid.iso
+            build.log
+          retention-days: 30
+
+      - name: Prepare release names (monthly)
+        if: github.event_name == 'schedule'
+        run: |
+          echo "TAG=monthly-$(date -u +%Y%m)" >> $GITHUB_ENV
+          echo "RELNAME=Monthly ISO $(date -u +%Y-%m-%d)" >> $GITHUB_ENV
+
+      - name: Create GitHub Release (monthly)
+        if: github.event_name == 'schedule'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.RELNAME }}
+          files: live-image-amd64.hybrid.iso
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
