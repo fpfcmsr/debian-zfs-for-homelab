@@ -2,8 +2,8 @@ name: Build ZFS Autoinstall ISO
 
 on:
   schedule:
-    - cron: "0 3 1 * *"       # run monthly on the 1st at 03:00 UTC
-  workflow_dispatch: {}       # allow manual runs
+    - cron: "0 3 1 * *"       # monthly on the 1st at 03:00 UTC
+  workflow_dispatch: {}
   push:
     paths:
       - "auto/**"
@@ -33,7 +33,8 @@ jobs:
         run: |
           chmod +x auto/config
           lb clean --purge || true
-          lb config
+          env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME="$PWD" SHELL=/bin/sh \
+            lb config
 
       - name: Build ISO
         run: |
