@@ -5,7 +5,7 @@ This repo builds a **text-only Debian 12 (Bookworm) Live ISO** that **automatica
 - **TPM2** auto-unlock if a TPM is present (fallback to passphrase)
 - One **admin** user (prompted), **root login is locked**
 - Extras: **openssh-server**, **cockpit** (+podman), Intel microcode/firmware
-- No GUI
+- Secure Boot support (after install enroll mok with password "debian-zfs")
 
 > ⚠️ **Destructive**: on boot, the installer **wipes two SSDs** (excluding the boot medium).
 
