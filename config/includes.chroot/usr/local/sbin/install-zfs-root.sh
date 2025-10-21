@@ -243,8 +243,8 @@ grep -q "^$USERNAME:" /etc/subgid || echo "$USERNAME:100000:65536" >> /etc/subgi
 apt install -y sudo
 getent group sudo >/dev/null || groupadd sudo
 useradd -m -s /bin/bash -G sudo,adm,cdrom,video,plugdev "$USERNAME"
-echo "$USER_PASSWORD" | chpasswd --crypt-method SHA512 "$USERNAME"
-passwd -l root
+# Correct chpasswd syntax: expects 'user:pass' on stdin
+echo "$USERNAME:$USER_PASSWORD" | chpasswd --crypt-method SHA512passwd -l root
 if [ -f /etc/ssh/sshd_config ]; then
   sed -ri 's/^\s*#?\s*PermitRootLogin\s+.*/PermitRootLogin no/' /etc/ssh/sshd_config
 fi
