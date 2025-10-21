@@ -14,6 +14,11 @@ on:
 permissions:
   contents: write   # needed to create a Release
 
+# Cancel any in-progress run of this workflow (per branch) when a new one starts
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+  
 jobs:
   build:
     runs-on: ubuntu-latest
