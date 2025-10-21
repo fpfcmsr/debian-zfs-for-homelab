@@ -1,3 +1,4 @@
 #!/bin/sh
 set -e
 systemctl enable zfs-auto-install.service
+systemctl enable zfs-live-mok-enroll.service

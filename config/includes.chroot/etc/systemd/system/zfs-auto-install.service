@@ -1,7 +1,7 @@
 [Unit]
 Description=Automated ZFS-on-root installer (DESTRUCTIVE)
-After=local-fs.target network-online.target
-Wants=network-online.target
+Wants=network-online.target zfs-live-mok-enroll.service
+After=local-fs.target network-online.target zfs-live-mok-enroll.service
 ConditionKernelCommandLine=zfs.auto=1
 # Make sure we own tty1 so prompts are not interleaved with agetty
 Conflicts=getty@tty1.service

@@ -1,0 +1,15 @@
+[Unit]
+Description=Live ISO Secure Boot: enroll MOK for ZFS if needed (may reboot once)
+DefaultDependencies=yes
+After=basic.target
+Before=zfs-auto-install.service
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+StandardError=journal+console
+Environment=DEBIAN_FRONTEND=noninteractive
+ExecStart=/usr/local/sbin/live-mok-enroll.sh
+
+[Install]
+WantedBy=multi-user.target

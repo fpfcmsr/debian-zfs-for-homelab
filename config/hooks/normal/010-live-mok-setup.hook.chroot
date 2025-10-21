@@ -1,0 +1,27 @@
+#!/bin/sh
+set -e
+# Run inside the live chroot during build. Create a MOK and make DKMS sign modules with it.
+MOK_DIR=/var/lib/dkms
+MOK_KEY="$MOK_DIR/MOK.key"
+MOK_DER="$MOK_DIR/MOK.der"
+MOK_CN="debian-zfs-live"
+
+apt-get update
+apt-get install -y --no-install-recommends mokutil openssl
+
+mkdir -p "$MOK_DIR"
+if [ ! -f "$MOK_KEY" ] || [ ! -f "$MOK_DER" ]; then
+  openssl req -new -x509 -newkey rsa:2048 \
+    -keyout "$MOK_KEY" -outform DER -out "$MOK_DER" \
+    -nodes -days 36500 -subj "/CN=$MOK_CN/"
+  chmod 600 "$MOK_KEY"
+fi
+
+# Tell DKMS to auto-sign with this key/cert (affects zfs-dkms in the live env)
+grep -q '^mok_signing_key=' /etc/dkms/framework.conf 2>/dev/null || echo "mok_signing_key=$MOK_KEY" >> /etc/dkms/framework.conf
+grep -q '^mok_certificate=' /etc/dkms/framework.conf 2>/dev/null || echo "mok_certificate=$MOK_DER" >> /etc/dkms/framework.conf
+
+# (Re)build & sign ZFS DKMS for the live kernel, so it's ready if Secure Boot is enabled
+if dpkg -s zfs-dkms >/dev/null 2>&1; then
+  dpkg-reconfigure -f noninteractive zfs-dkms || true
+fi
