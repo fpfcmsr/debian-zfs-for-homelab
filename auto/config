@@ -10,5 +10,5 @@ lb config noauto \
   --debian-installer false \
   --archive-areas "main contrib non-free non-free-firmware" \
   --apt-recommends false \
-  --bootappend-live "zfs.auto=1 console=tty0" \
+  --bootappend-live "boot=live components zfs.auto=1 console=tty0" \
   "${@}"
