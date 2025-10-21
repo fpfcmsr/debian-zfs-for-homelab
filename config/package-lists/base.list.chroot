@@ -59,6 +59,28 @@ uidmap
 slirp4netns
 fuse-overlayfs
 
-# Intel CPU/GPU microcode/firmware
+# Virtualization packages - No GUI tools (virt-manager) are included.
+qemu-kvm
+qemu-system-x86
+qemu-utils
+virtiofsd
+libvirt-daemon-system
+libvirt-daemon-driver-qemu
+libvirt-daemon-config-network
+libvirt-daemon-config-nwfilter
+libvirt-clients
+cpu-checker
+virtinst
+bridge-utils
+dnsmasq-base
+ebtables
+iptables
+nftables
+ovmf
+seabios
+
+# CPU/GPU microcode/firmware 
 intel-microcode
+amd64-microcode
 firmware-misc-nonfree
+firmware-amd-graphics
