@@ -112,9 +112,12 @@ jobs:
       
             # Root tsconfig expects electron types; install at root
             corepack yarn add -D @types/electron
+
+            # Build all workspaces that define "build" (Yarn 4 requires -A/-R)
+            corepack yarn workspaces foreach -Av --topological-dev run build || true
       
             # Build only non-private workspaces, topologically (skips root workspace)
-            corepack yarn workspaces foreach -R --no-private --topological-dev run build || true
+            #corepack yarn workspaces foreach -R --no-private --topological-dev run build || true
       
             # DO NOT call `yarn run build` at the root (it tries 'build:app' and fails)
           fi
