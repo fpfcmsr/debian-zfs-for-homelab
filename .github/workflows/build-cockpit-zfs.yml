@@ -91,7 +91,7 @@ jobs:
                  | head -n1 | sed -E 's/.*[=: ] *//')"
           [ -n "${ver:-}" ] || ver="0.29.35"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
-          pip3 install "Cython==$ver"
+          pip3 install "Cython==${{ steps.cython.outputs.version }}" legacy-cgi
       
       - name: Build cockpit-zfs (prefer configure; otherwise Yarn only, skip root)
         shell: bash
