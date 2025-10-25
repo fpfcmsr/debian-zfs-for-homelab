@@ -1,4 +1,4 @@
-name: Build & publish py-libzfs + cockpit-zfs (Debian trixie + signed APT repo)
+name: Build & publish py-libzfs + cockpit-zfs
 
 on:
   push:
@@ -63,11 +63,10 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates curl git jq rsync pkg-config \
             build-essential debhelper devscripts fakeroot dpkg-dev dh-python \
-            python3 python3-dev python3-pip python3-setuptools python3-wheel python3-packaging cython3 \
+            python3 python3-dev python3-pip python3-setuptools python3-venv python3-wheel python3-packaging cython3 \
             zfsutils-linux libzfslinux-dev \
             make gzip tar findutils xz-utils gnupg apt-utils \
             nodejs npm
-          python3 -m pip install --upgrade pip
           if command -v corepack >/dev/null 2>&1; then corepack enable || true; fi
 
       # ---------- Build python3-libzfs ----------
@@ -85,13 +84,16 @@ jobs:
             fi
           fi
 
-      - name: Build wheel for py-libzfs
+      - name: Build wheel for py-libzfs (in venv)
         id: pylibzfs_build
         shell: bash
         working-directory: py-libzfs
         run: |
           set -euxo pipefail
-          python3 -m pip wheel --no-deps -w dist .
+          python3 -m venv .venv
+          . .venv/bin/activate
+          pip install -U pip wheel build
+          python -m build --wheel
           WHEEL=$(ls dist/*.whl | head -n1)
           echo "wheel=$WHEEL" >> "$GITHUB_OUTPUT"
           BN=$(basename "$WHEEL"); VER="${BN#py_libzfs-}"; VER="${VER%%-*}"
@@ -106,7 +108,12 @@ jobs:
           VER="${{ steps.pylibzfs_build.outputs.version }}"
           STAGE="$PWD/stage-pylibzfs"
           mkdir -p "$STAGE"
-          python3 -m pip install --no-deps --prefix=/usr --root="$STAGE" "${{ steps.pylibzfs_build.outputs.wheel }}"
+
+          # Use a temp venv so pip can install without PEP 668 complaints
+          python3 -m venv /tmp/pylibzfs-venv
+          . /tmp/pylibzfs-venv/bin/activate
+          pip install --no-deps --prefix=/usr --root="$STAGE" "${{ steps.pylibzfs_build.outputs.wheel }}"
+          
           mkdir -p "$STAGE/DEBIAN"
           cat > "$STAGE/DEBIAN/control" <<EOF
           Package: ${PKG_PY_NAME}
