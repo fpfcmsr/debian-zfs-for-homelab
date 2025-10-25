@@ -149,7 +149,7 @@ jobs:
           echo "module=$MODULE" >> "$GITHUB_OUTPUT"
           echo "version=$VER"   >> "$GITHUB_OUTPUT"
 
-      - name: Build .deb (Architecture: all, Depends on python3-pyzfs)
+      - name: Build .deb 
         id: deb
         shell: bash
         run: |
