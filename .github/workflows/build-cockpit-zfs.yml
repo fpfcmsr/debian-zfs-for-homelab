@@ -1,9 +1,9 @@
-name: Build cockpit-zfs 
+name: Build cockpit-zfs (Debian trixie, monthly + APT repo)
 
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "0 6 1 * *" # run monthly, 06:00 UTC on the 1st
+    - cron: "0 6 1 * *" # monthly, 06:00 UTC on the 1st
 
 permissions:
   contents: read
@@ -52,9 +52,10 @@ jobs:
             build-essential dpkg-dev fakeroot debhelper devscripts \
             python3 python3-pip python3-packaging \
             git make gzip tar findutils xz-utils \
-            gnupg apt-utils
-          # allow pip to install into system site-packages (PEP 668)
-          echo "PIP_BREAK_SYSTEM_PACKAGES=1" >> $GITHUB_ENV
+            gnupg apt-utils \
+            nodejs npm
+          echo "PIP_BREAK_SYSTEM_PACKAGES=1" >> "$GITHUB_ENV"
+          if command -v corepack >/dev/null 2>&1; then corepack enable || true; fi
 
       # --- Get latest cockpit-zfs release & extract ---
       - name: Get latest 45Drives/cockpit-zfs release tag
@@ -89,65 +90,88 @@ jobs:
           [ -n "${ver:-}" ] || ver="0.29.35"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           echo "Using Cython==$ver"
+          pip3 install "Cython==$ver"
 
-      - name: Install required Cython
-        shell: bash
-        run: |
-          set -euxo pipefail
-          pip3 install "Cython==${{ steps.cython.outputs.version }}"
-
-      # --- Build cockpit-zfs with ./configure && make && make install (into staging) ---
-      - name: Configure & build cockpit-zfs
+      # --- Build cockpit-zfs with your flow, but only run ./configure if it exists ---
+      - name: Build cockpit-zfs (configure if present, otherwise native build)
         shell: bash
         working-directory: ${{ steps.fetch_src.outputs.src }}
         run: |
           set -euxo pipefail
-          # Some releases may not ship a configure; bootstrap if needed
-          if [ ! -x ./configure ]; then
-            if [ -x ./autogen.sh ]; then
-              apt-get update && apt-get install -y --no-install-recommends autoconf automake libtool
-              ./autogen.sh
-            else
-              apt-get update && apt-get install -y --no-install-recommends autoconf automake libtool
-              autoreconf -fi
-            fi
-          fi
-          ./configure --prefix=/usr
-          make -j"$(nproc)"
 
-      - name: Stage install tree
+          if [ -x ./configure ]; then
+            ./configure --prefix=/usr
+            make -j"$(nproc)"
+          else
+            echo "No ./configure in this release; trying native build."
+            if [ -f Makefile ]; then
+              make -j"$(nproc)" || true
+            fi
+            # If no dist yet, try Node build
+            if [ ! -d dist ]; then
+              corepack enable || true
+              if [ -f yarn.lock ]; then
+                (corepack yarn install --immutable) || corepack yarn install
+                corepack yarn build || corepack yarn run build || true
+              elif [ -f package.json ]; then
+                npm ci || npm i
+                npm run build || true
+              fi
+            fi
+            test -d dist || { echo "::error::No build artifacts (dist/) produced"; exit 1; }
+          fi
+
+      - name: Stage install tree (make install if available, else manual stage)
+        id: stage
         shell: bash
         run: |
           set -euxo pipefail
           SRC="${{ steps.fetch_src.outputs.src }}"
           STAGE="$PWD/stage"
           mkdir -p "$STAGE"
-          # install into staging via DESTDIR while still running "make install"
-          make -C "$SRC" install DESTDIR="$STAGE"
-          # sanity: cockpit manifest should exist somewhere under /usr/share/cockpit/*/manifest.json
+
+          # Try "make install" if there is an install target
+          if make -C "$SRC" -n install >/dev/null 2>&1; then
+            make -C "$SRC" install DESTDIR="$STAGE"
+          else
+            echo "No usable 'make install' target; staging from built 'dist/'."
+            # Discover module name from manifest.json
+            if [ -f "$SRC/manifest.json" ]; then
+              MODULE="$(jq -r '.name // empty' "$SRC/manifest.json" || true)"
+            elif [ -f "$SRC/dist/manifest.json" ]; then
+              MODULE="$(jq -r '.name // empty' "$SRC/dist/manifest.json" || true)"
+            else
+              MODULE=""
+            fi
+            [ -n "$MODULE" ] || MODULE="zfs"
+
+            INSTALL_ROOT="$STAGE/usr/share/cockpit/${MODULE}"
+            mkdir -p "$INSTALL_ROOT"
+            if [ -d "$SRC/dist" ]; then
+              rsync -a --delete "$SRC/dist/" "$INSTALL_ROOT/"
+            else
+              rsync -a --delete --exclude '.git' --exclude 'node_modules' --exclude '.github' \
+                --exclude '*.yml' --exclude '*.yaml' --exclude 'packaging' \
+                "$SRC/" "$INSTALL_ROOT/"
+            fi
+          fi
+
+          # sanity: ensure a cockpit manifest ended up in the staged tree
           test -n "$(find "$STAGE/usr/share/cockpit" -maxdepth 2 -name manifest.json -print -quit)" || {
-            echo "::error::No Cockpit manifest.json found after install"; exit 1; }
+            echo "::error::No Cockpit manifest.json found after staging"; exit 1; }
 
-      - name: Determine module name & version
-        id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Try to locate the module directory under the staged tree
-          MODDIR="$(find "$PWD/stage/usr/share/cockpit" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+          # Derive metadata for packaging
+          MODDIR="$(find "$STAGE/usr/share/cockpit" -mindepth 1 -maxdepth 1 -type d | head -n1)"
           MODULE="$(basename "$MODDIR")"
-          [ -n "$MODULE" ] || MODULE="zfs"
-
-          # Version: prefer the README/package.json in the source; else use tag (strip leading v)
           VER=""
-          if [ -f "${{ steps.fetch_src.outputs.src }}/package.json" ]; then
-            VER="$(jq -r '.version // empty' "${{ steps.fetch_src.outputs.src }}/package.json" || echo "")"
+          if [ -f "${SRC}/package.json" ]; then
+            VER="$(jq -r '.version // empty' "${SRC}/package.json" || echo "")"
           fi
           [ -n "$VER" ] || VER="${{ steps.latest.outputs.tag }}"
           VER="${VER#v}"
 
-          echo "module=$MODULE" >> "$GITHUB_OUTPUT"
-          echo "version=$VER"   >> "$GITHUB_OUTPUT"
+          echo "MODULE=$MODULE" >> "$GITHUB_ENV"
+          echo "VERSION=$VER"   >> "$GITHUB_ENV"
 
       - name: Build .deb 
         id: deb
@@ -174,8 +198,7 @@ jobs:
           chmod 0755 "$STAGE/DEBIAN/postinst"
 
           OUT="$PWD/artifacts"; mkdir -p "$OUT"
-          VER="${{ steps.meta.outputs.version }}"
-          DEB="cockpit-zfs_${VER}_all.deb"
+          DEB="cockpit-zfs_${VERSION}_all.deb"
           dpkg-deb --build "$STAGE" "$OUT/$DEB"
           echo "path=$OUT/$DEB" >> "$GITHUB_OUTPUT"
           echo "name=$DEB"      >> "$GITHUB_OUTPUT"
@@ -200,7 +223,6 @@ jobs:
         run: |
           set -euxo pipefail
           SITE="$PWD/site"
-          mkdir -p "$SITE"
           mkdir -p "$SITE/pool/${COMPONENT}/c/cockpit-zfs"
           cp -f "${{ steps.deb.outputs.path }}" "$SITE/pool/${COMPONENT}/c/cockpit-zfs/"
 
