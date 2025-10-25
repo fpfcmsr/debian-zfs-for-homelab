@@ -45,21 +45,39 @@ jobs:
       COMPONENT: "main"
 
     steps:
-      - name: Prepare apt & install toolchain
+      - name: Configure APT (add contrib safely) + update
         shell: bash
         run: |
           set -euxo pipefail
-          . /etc/os-release
-          DIST="${VERSION_CODENAME:-trixie}"
-      
-          # Create a classic sources.list entry that includes contrib
-          cat >/etc/apt/sources.list.d/${DIST}-main-contrib.list <<EOF
-          deb http://deb.debian.org/debian ${DIST} main contrib
-          deb http://deb.debian.org/debian ${DIST}-updates main contrib
-          deb http://security.debian.org/debian-security ${DIST}-security main contrib
-          EOF
-          
+          # If deb822 file exists, ensure every Components line has 'contrib'
+          if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+            tmp=$(mktemp)
+            awk '
+              BEGIN { RS=""; ORS="\n\n" }
+              {
+                # For each paragraph, add "contrib" to Components if missing
+                sub(/Components:[^\n]*/, \
+                    sprintf("%s%s", \
+                            match($0, /Components:[^\n]*/) ? substr($0, RSTART, RLENGTH) : "Components: main", \
+                            index(substr($0, RSTART, RLENGTH), "contrib") ? "" : " contrib"))
+                print
+              }' /etc/apt/sources.list.d/debian.sources > "$tmp"
+            mv "$tmp" /etc/apt/sources.list.d/debian.sources
+          else
+            . /etc/os-release
+            DIST="${VERSION_CODENAME:-trixie}"
+            cat >/etc/apt/sources.list <<EOF
+            deb http://deb.debian.org/debian ${DIST} main contrib
+            deb http://deb.debian.org/debian ${DIST}-updates main contrib
+            deb http://security.debian.org/debian-security ${DIST}-security main contrib
+            EOF
+          fi
           apt-get update
+
+      - name: Install build toolchain & deps
+        shell: bash
+        run: |
+          set -euxo pipefail
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates curl git jq rsync pkg-config \
             build-essential debhelper devscripts fakeroot dpkg-dev dh-python \
