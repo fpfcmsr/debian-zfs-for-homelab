@@ -91,7 +91,7 @@ jobs:
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           pip3 install "Cython==$ver"
       
-      - name: Build cockpit-zfs (prefer configure; otherwise Yarn only)
+      - name: Build cockpit-zfs (prefer configure; otherwise Yarn only, skip root)
         shell: bash
         working-directory: ${{ steps.fetch_src.outputs.src }}
         run: |
@@ -101,24 +101,24 @@ jobs:
             ./configure --prefix=/usr
             make -j"$(nproc)"
           else
-            echo "No ./configure; building with Yarn only (skip Makefile to avoid 'build:app')."
+            echo "No ./configure; building with Yarn only (skip Makefile & root)."
       
-            # Use node-modules linker to avoid PnP pitfalls in CI
+            # Use node-modules linker to avoid PnP friction in CI
             export YARN_NODE_LINKER=node-modules
             corepack enable || true
       
             # Install deps (allow lockfile updates if needed)
             YARN_ENABLE_IMMUTABLE_INSTALLS=false corepack yarn install
       
-            # Root needs electron types; install at the top-level workspace (-W)
+            # Root tsconfig expects electron types; install at root
             corepack yarn add -D @types/electron
       
-            # Build all workspaces that define "build" (Yarn 4 requires -A/-R)
-            corepack yarn workspaces foreach -Av --topological-dev run build || true
+            # Build only non-private workspaces, topologically (skips root workspace)
+            corepack yarn workspaces foreach -R --no-private --topological-dev run build || true
       
-            # Fallback: try root build if present
-            corepack yarn run build || true
+            # DO NOT call `yarn run build` at the root (it tries 'build:app' and fails)
           fi
+
 
       - name: Stage install tree (manual, from dist/)
         id: stage
