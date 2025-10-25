@@ -104,21 +104,17 @@ jobs:
             echo "No ./configure; building with Yarn only (skip Makefile to avoid 'build:app')."
             corepack enable || true
       
-            if [ -f yarn.lock ]; then
-              # Install workspaces; allow updates if the lock is slightly out-of-sync
-              YARN_ENABLE_IMMUTABLE_INSTALLS=false corepack yarn install
-              # Build every workspace if it has a build script; ignore ones that don't
-              corepack yarn workspaces foreach -vi run build || true
-              # Also try root build if defined
-              corepack yarn run build || true
-            elif [ -f package.json ]; then
-              npm ci || npm i
-              npm run build
-            fi
+            # Install deps (allow lock updates if needed) and ensure Electron types exist
+            YARN_ENABLE_IMMUTABLE_INSTALLS=false corepack yarn install
+            corepack yarn add -D @types/electron
       
-            # We require dist/ from the build
-            test -d dist || { echo "::error::No dist/ produced"; exit 1; }
+            # Build all workspaces that define a "build" script (Yarn 4 needs -A or -R)
+            corepack yarn workspaces foreach -Av --topological-dev run build || true
+      
+            # Also try root-level build if present
+            corepack yarn run build || true
           fi
+
 
       - name: Stage install tree (manual, from dist/)
         id: stage
@@ -129,18 +125,17 @@ jobs:
           STAGE="$PWD/stage"
           mkdir -p "$STAGE"
       
-          # Determine module name from manifest.json (prefer dist/, then root)
-          MANIFEST=""
-          [ -f "$SRC/dist/manifest.json" ] && MANIFEST="$SRC/dist/manifest.json" || true
-          [ -z "$MANIFEST" ] && [ -f "$SRC/manifest.json" ] && MANIFEST="$SRC/manifest.json" || true
-          [ -n "$MANIFEST" ] || { echo "::error::manifest.json not found"; exit 1; }
+          # Find the cockpit module's built dist (pick the first manifest we see)
+          MANIFEST_PATH="$(find "$SRC" -type f -path '*/dist/manifest.json' -print -quit || true)"
+          [ -n "$MANIFEST_PATH" ] || { echo "::error::No dist/manifest.json produced"; exit 1; }
+          DIST_DIR="$(dirname "$MANIFEST_PATH")"
       
-          MODULE="$(jq -r '.name // empty' "$MANIFEST" || true)"
+          MODULE="$(jq -r '.name // empty' "$MANIFEST_PATH" || true)"
           [ -n "$MODULE" ] || MODULE="zfs"
       
           INSTALL_ROOT="$STAGE/usr/share/cockpit/${MODULE}"
           mkdir -p "$INSTALL_ROOT"
-          rsync -a --delete "$SRC/dist/" "$INSTALL_ROOT/"
+          rsync -a --delete "$DIST_DIR/" "$INSTALL_ROOT/"
       
           test -f "$INSTALL_ROOT/manifest.json" || { echo "::error::manifest.json missing in staged tree"; exit 1; }
       
@@ -154,6 +149,7 @@ jobs:
       
           echo "MODULE=$MODULE" >> "$GITHUB_ENV"
           echo "VERSION=$VER"   >> "$GITHUB_ENV"
+
 
 
       - name: Build .deb 
