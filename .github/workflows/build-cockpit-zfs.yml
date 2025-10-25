@@ -111,7 +111,7 @@ jobs:
             YARN_ENABLE_IMMUTABLE_INSTALLS=false corepack yarn install
       
             # Root needs electron types; install at the top-level workspace (-W)
-            corepack yarn add -D -W @types/electron
+            corepack yarn add -D --workspace @types/electron
       
             # Build all workspaces that define "build" (Yarn 4 requires -A/-R)
             corepack yarn workspaces foreach -Av --topological-dev run build || true
