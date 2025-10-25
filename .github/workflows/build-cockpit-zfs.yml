@@ -91,62 +91,36 @@ jobs:
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           pip3 install "Cython==$ver"
       
-      # 5) Build (now that submodules/workspaces exist, make can run bootstrap.sh safely)
-      - name: Build cockpit-zfs
+      - name: Build cockpit-zfs (prefer configure; otherwise Yarn only)
         shell: bash
         working-directory: ${{ steps.fetch_src.outputs.src }}
         run: |
           set -euxo pipefail
-          # If configure exists, follow your preferred flow; otherwise use native build
+      
           if [ -x ./configure ]; then
             ./configure --prefix=/usr
             make -j"$(nproc)"
           else
-            make -j"$(nproc)" || true        # runs bootstrap.sh (needs sponge) and yarn build
-            if [ ! -d dist ]; then
-              # Fallback: try explicit Node build if Makefile didn’t build dist
-              corepack enable || true
-              if [ -f yarn.lock ]; then
-                (corepack yarn install --immutable) || corepack yarn install
-                corepack yarn build || corepack yarn run build
-              elif [ -f package.json ]; then
-                npm ci || npm i
-                npm run build
-              fi
+            echo "No ./configure; building with Yarn only (skip Makefile to avoid 'build:app')."
+            corepack enable || true
+      
+            if [ -f yarn.lock ]; then
+              # Install workspaces; allow updates if the lock is slightly out-of-sync
+              YARN_ENABLE_IMMUTABLE_INSTALLS=false corepack yarn install
+              # Build every workspace if it has a build script; ignore ones that don't
+              corepack yarn workspaces foreach -vi run build || true
+              # Also try root build if defined
+              corepack yarn run build || true
+            elif [ -f package.json ]; then
+              npm ci || npm i
+              npm run build
             fi
+      
+            # We require dist/ from the build
             test -d dist || { echo "::error::No dist/ produced"; exit 1; }
           fi
 
-      # --- Build cockpit-zfs with your flow, but only run ./configure if it exists ---
-      - name: Build cockpit-zfs (configure if present, otherwise native build)
-        shell: bash
-        working-directory: ${{ steps.fetch_src.outputs.src }}
-        run: |
-          set -euxo pipefail
-
-          if [ -x ./configure ]; then
-            ./configure --prefix=/usr
-            make -j"$(nproc)"
-          else
-            echo "No ./configure in this release; trying native build."
-            if [ -f Makefile ]; then
-              make -j"$(nproc)" || true
-            fi
-            # If no dist yet, try Node build
-            if [ ! -d dist ]; then
-              corepack enable || true
-              if [ -f yarn.lock ]; then
-                (corepack yarn install --immutable) || corepack yarn install
-                corepack yarn build || corepack yarn run build || true
-              elif [ -f package.json ]; then
-                npm ci || npm i
-                npm run build || true
-              fi
-            fi
-            test -d dist || { echo "::error::No build artifacts (dist/) produced"; exit 1; }
-          fi
-
-      - name: Stage install tree (make install if available, else manual stage)
+      - name: Stage install tree (manual, from dist/)
         id: stage
         shell: bash
         run: |
@@ -154,49 +128,33 @@ jobs:
           SRC="${{ steps.fetch_src.outputs.src }}"
           STAGE="$PWD/stage"
           mkdir -p "$STAGE"
-
-          # Try "make install" if there is an install target
-          if make -C "$SRC" -n install >/dev/null 2>&1; then
-            make -C "$SRC" install DESTDIR="$STAGE"
-          else
-            echo "No usable 'make install' target; staging from built 'dist/'."
-            # Discover module name from manifest.json
-            if [ -f "$SRC/manifest.json" ]; then
-              MODULE="$(jq -r '.name // empty' "$SRC/manifest.json" || true)"
-            elif [ -f "$SRC/dist/manifest.json" ]; then
-              MODULE="$(jq -r '.name // empty' "$SRC/dist/manifest.json" || true)"
-            else
-              MODULE=""
-            fi
-            [ -n "$MODULE" ] || MODULE="zfs"
-
-            INSTALL_ROOT="$STAGE/usr/share/cockpit/${MODULE}"
-            mkdir -p "$INSTALL_ROOT"
-            if [ -d "$SRC/dist" ]; then
-              rsync -a --delete "$SRC/dist/" "$INSTALL_ROOT/"
-            else
-              rsync -a --delete --exclude '.git' --exclude 'node_modules' --exclude '.github' \
-                --exclude '*.yml' --exclude '*.yaml' --exclude 'packaging' \
-                "$SRC/" "$INSTALL_ROOT/"
-            fi
-          fi
-
-          # sanity: ensure a cockpit manifest ended up in the staged tree
-          test -n "$(find "$STAGE/usr/share/cockpit" -maxdepth 2 -name manifest.json -print -quit)" || {
-            echo "::error::No Cockpit manifest.json found after staging"; exit 1; }
-
-          # Derive metadata for packaging
-          MODDIR="$(find "$STAGE/usr/share/cockpit" -mindepth 1 -maxdepth 1 -type d | head -n1)"
-          MODULE="$(basename "$MODDIR")"
+      
+          # Determine module name from manifest.json (prefer dist/, then root)
+          MANIFEST=""
+          [ -f "$SRC/dist/manifest.json" ] && MANIFEST="$SRC/dist/manifest.json" || true
+          [ -z "$MANIFEST" ] && [ -f "$SRC/manifest.json" ] && MANIFEST="$SRC/manifest.json" || true
+          [ -n "$MANIFEST" ] || { echo "::error::manifest.json not found"; exit 1; }
+      
+          MODULE="$(jq -r '.name // empty' "$MANIFEST" || true)"
+          [ -n "$MODULE" ] || MODULE="zfs"
+      
+          INSTALL_ROOT="$STAGE/usr/share/cockpit/${MODULE}"
+          mkdir -p "$INSTALL_ROOT"
+          rsync -a --delete "$SRC/dist/" "$INSTALL_ROOT/"
+      
+          test -f "$INSTALL_ROOT/manifest.json" || { echo "::error::manifest.json missing in staged tree"; exit 1; }
+      
+          # Version: prefer package.json, else the release tag
           VER=""
           if [ -f "${SRC}/package.json" ]; then
             VER="$(jq -r '.version // empty' "${SRC}/package.json" || echo "")"
           fi
           [ -n "$VER" ] || VER="${{ steps.latest.outputs.tag }}"
           VER="${VER#v}"
-
+      
           echo "MODULE=$MODULE" >> "$GITHUB_ENV"
           echo "VERSION=$VER"   >> "$GITHUB_ENV"
+
 
       - name: Build .deb 
         id: deb
