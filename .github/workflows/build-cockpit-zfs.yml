@@ -95,12 +95,30 @@ jobs:
           set -euxo pipefail
           git clone --filter=blob:none "$PY_LIBZFS_REPO" py-libzfs
           cd py-libzfs
-          if [ -n "${{ github.event.inputs.py_ref || '' }}" ]; then
-            git checkout "${{ github.event.inputs.py_ref }}"
-          else
-            if git describe --tags --abbrev=0 >/dev/null 2>&1; then
-              git checkout "$(git describe --tags --abbrev=0)"
+          git fetch --tags --quiet
+
+          REQ_REF="${{ github.event.inputs.py_ref || '' }}"
+      
+          # Try branch, then tag, then SHA; otherwise fall back
+          if [ -n "$REQ_REF" ]; then
+            if git rev-parse -q --verify "refs/heads/$REQ_REF" >/dev/null; then
+              git checkout "$REQ_REF"
+            elif git rev-parse -q --verify "refs/tags/$REQ_REF" >/dev/null; then
+              git checkout "refs/tags/$REQ_REF"
+            elif git cat-file -e "$REQ_REF^{commit}" 2>/dev/null; then
+              git checkout "$REQ_REF"
+            elif git ls-remote --exit-code --heads origin "$REQ_REF" >/dev/null; then
+              git checkout --track "origin/$REQ_REF"
+            elif git ls-remote --exit-code --tags origin "$REQ_REF" >/dev/null; then
+              git checkout "tags/$REQ_REF"
+            else
+              echo "::warning title=py-libzfs::Input ref '$REQ_REF' not found; falling back to latest tag (or default branch)."
+              FallbackRef="$(git describe --tags --abbrev=0 2>/dev/null || git rev-parse --abbrev-ref HEAD)"
+              git checkout "$FallbackRef"
             fi
+          else
+            FallbackRef="$(git describe --tags --abbrev=0 2>/dev/null || git rev-parse --abbrev-ref HEAD)"
+            git checkout "$FallbackRef"
           fi
 
       - name: Build wheel for py-libzfs (in venv)
@@ -166,13 +184,29 @@ jobs:
         run: |
           set -euxo pipefail
           git clone --filter=blob:none "$COCKPIT_REPO" cockpit-zfs
-          cd cockpit-zfs
-          if [ -n "${{ github.event.inputs.cockpit_ref || '' }}" ]; then
-            git checkout "${{ github.event.inputs.cockpit_ref }}"
-          else
-            if git describe --tags --abbrev=0 >/dev/null 2>&1; then
-              git checkout "$(git describe --tags --abbrev=0)"
+          git fetch --tags --quiet
+
+          REQ_REF="${{ github.event.inputs.cockpit_ref || '' }}"
+      
+          if [ -n "$REQ_REF" ]; then
+            if git rev-parse -q --verify "refs/heads/$REQ_REF" >/dev/null; then
+              git checkout "$REQ_REF"
+            elif git rev-parse -q --verify "refs/tags/$REQ_REF" >/dev/null; then
+              git checkout "refs/tags/$REQ_REF"
+            elif git cat-file -e "$REQ_REF^{commit}" 2>/dev/null; then
+              git checkout "$REQ_REF"
+            elif git ls-remote --exit-code --heads origin "$REQ_REF" >/devnull; then
+              git checkout --track "origin/$REQ_REF"
+            elif git ls-remote --exit-code --tags origin "$REQ_REF" >/dev/null; then
+              git checkout "tags/$REQ_REF"
+            else
+              echo "::warning title=cockpit-zfs::Input ref '$REQ_REF' not found; falling back to latest tag (or default branch)."
+              FallbackRef="$(git describe --tags --abbrev=0 2>/dev/null || git rev-parse --abbrev-ref HEAD)"
+              git checkout "$FallbackRef"
             fi
+          else
+            FallbackRef="$(git describe --tags --abbrev=0 2>/dev/null || git rev-parse --abbrev-ref HEAD)"
+            git checkout "$FallbackRef"
           fi
 
       - name: Setup Node.js (modern)
