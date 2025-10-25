@@ -1,0 +1,357 @@
+name: Build & publish py-libzfs + cockpit-zfs (Debian trixie + signed APT repo)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      py_ref:
+        description: "truenas/py-libzfs ref (tag/branch/sha). Default: latest tag or default branch"
+        required: false
+      cockpit_ref:
+        description: "45Drives/cockpit-zfs ref (tag/branch/sha). Default: latest tag or default branch"
+        required: false
+      prerelease:
+        description: "Mark created Release as pre-release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write        # create releases, push gh-pages if needed
+  pages: write           # deploy Pages
+  id-token: write        # required by actions/deploy-pages
+
+concurrency:
+  group: debian-trixie-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trixie-build:
+    runs-on: ubuntu-latest
+    container: debian:trixie-slim
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    env:
+      DEB_MAINTAINER: "GitHub Actions <noreply@github.com>"
+      PY_LIBZFS_REPO: "https://github.com/truenas/py-libzfs.git"
+      COCKPIT_REPO:  "https://github.com/45Drives/cockpit-zfs.git"
+      PKG_PY_NAME: "python3-libzfs"
+      PKG_COCKPIT_NAME: "cockpit-zfs"
+      DIST: "trixie"
+      COMPONENT: "main"
+
+    steps:
+      - name: Prepare apt & install toolchain
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sed -E -i 's/^(deb.*\s)main(\s|$)/\1main contrib\2/' /etc/apt/sources.list
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl git jq rsync pkg-config \
+            build-essential debhelper devscripts fakeroot dpkg-dev dh-python \
+            python3 python3-dev python3-pip python3-setuptools python3-wheel python3-packaging cython3 \
+            zfsutils-linux libzfslinux-dev \
+            make gzip tar findutils xz-utils gnupg apt-utils \
+            nodejs npm
+          python3 -m pip install --upgrade pip
+          if command -v corepack >/dev/null 2>&1; then corepack enable || true; fi
+
+      # ---------- Build python3-libzfs ----------
+      - name: Clone truenas/py-libzfs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --filter=blob:none "$PY_LIBZFS_REPO" py-libzfs
+          cd py-libzfs
+          if [ -n "${{ github.event.inputs.py_ref || '' }}" ]; then
+            git checkout "${{ github.event.inputs.py_ref }}"
+          else
+            if git describe --tags --abbrev=0 >/dev/null 2>&1; then
+              git checkout "$(git describe --tags --abbrev=0)"
+            fi
+          fi
+
+      - name: Build wheel for py-libzfs
+        id: pylibzfs_build
+        shell: bash
+        working-directory: py-libzfs
+        run: |
+          set -euxo pipefail
+          python3 -m pip wheel --no-deps -w dist .
+          WHEEL=$(ls dist/*.whl | head -n1)
+          echo "wheel=$WHEEL" >> "$GITHUB_OUTPUT"
+          BN=$(basename "$WHEEL"); VER="${BN#py_libzfs-}"; VER="${VER%%-*}"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Package python3-libzfs as .deb
+        id: pylibzfs_deb
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ARCH="$(dpkg --print-architecture)"
+          VER="${{ steps.pylibzfs_build.outputs.version }}"
+          STAGE="$PWD/stage-pylibzfs"
+          mkdir -p "$STAGE"
+          python3 -m pip install --no-deps --prefix=/usr --root="$STAGE" "${{ steps.pylibzfs_build.outputs.wheel }}"
+          mkdir -p "$STAGE/DEBIAN"
+          cat > "$STAGE/DEBIAN/control" <<EOF
+          Package: ${PKG_PY_NAME}
+          Priority: optional
+          Section: python
+          Maintainer: ${DEB_MAINTAINER}
+          Architecture: ${ARCH}
+          Depends: python3, zfsutils-linux
+          Description: Python 3 bindings for libzfs
+           Pythonic bindings for libzfs for ZFS management and queries.
+          EOF
+          printf '#!/bin/sh\nset -e\nexit 0\n' > "$STAGE/DEBIAN/postinst"
+          chmod 0755 "$STAGE/DEBIAN/postinst"
+          OUT="$PWD/artifacts"; mkdir -p "$OUT"
+          DEB="${PKG_PY_NAME}_${VER}_${ARCH}.deb"
+          dpkg-deb --build "$STAGE" "$OUT/$DEB"
+          echo "deb_path=$OUT/$DEB" >> "$GITHUB_OUTPUT"
+          echo "deb_name=$DEB" >> "$GITHUB_OUTPUT"
+
+      - name: Upload python3-libzfs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pylibzfs_deb.outputs.deb_name }}
+          path: ${{ steps.pylibzfs_deb.outputs.deb_path }}
+          if-no-files-found: error
+          retention-days: 14
+
+      # ---------- Build cockpit-zfs ----------
+      - name: Clone 45Drives/cockpit-zfs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --filter=blob:none "$COCKPIT_REPO" cockpit-zfs
+          cd cockpit-zfs
+          if [ -n "${{ github.event.inputs.cockpit_ref || '' }}" ]; then
+            git checkout "${{ github.event.inputs.cockpit_ref }}"
+          else
+            if git describe --tags --abbrev=0 >/dev/null 2>&1; then
+              git checkout "$(git describe --tags --abbrev=0)"
+            fi
+          fi
+
+      - name: Setup Node.js (modern)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "yarn"
+          cache-dependency-path: "cockpit-zfs/yarn.lock"
+
+      - name: Build cockpit-zfs web assets
+        shell: bash
+        working-directory: cockpit-zfs
+        run: |
+          set -euxo pipefail
+          if command -v corepack >/dev/null 2>&1; then corepack enable || true; fi
+          if [ -f yarn.lock ]; then
+            (corepack yarn install --immutable) || corepack yarn install
+            corepack yarn build || corepack yarn run build || true
+          else
+            npm ci || npm i
+            npm run build || true
+          fi
+          [ -d dist ] || { [ -f Makefile ] && make -k dist || true; }
+
+      - name: Determine cockpit module name & version
+        id: meta
+        shell: bash
+        working-directory: cockpit-zfs
+        run: |
+          set -euo pipefail
+          MODULE=$(jq -r '.name // empty' manifest.json 2>/dev/null || echo "")
+          [ -n "$MODULE" ] || MODULE="zfs"
+          VERSION=""
+          if git describe --tags --abbrev=0 >/dev/null 2>&1; then
+            TAG=$(git describe --tags --abbrev=0); VERSION="${TAG#v}"
+          fi
+          if [ -z "$VERSION" ] && [ -f package.json ]; then
+            VERSION=$(jq -r '.version // empty' package.json || echo "")
+          fi
+          if [ -z "$VERSION" ]; then
+            VERSION="$(git describe --tags --always --dirty | sed 's/^v//')"
+          fi
+          echo "module=$MODULE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Stage cockpit-zfs install tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          MODULE="${{ steps.meta.outputs.module }}"
+          STAGE="$PWD/stage-cockpit"
+          INSTALL_ROOT="$STAGE/usr/share/cockpit/${MODULE}"
+          mkdir -p "$INSTALL_ROOT"
+          if grep -qE '^[[:space:]]*install[: ]' cockpit-zfs/Makefile 2>/dev/null; then
+            make -C cockpit-zfs install DESTDIR="$STAGE" PREFIX=/usr || true
+          fi
+          if [ ! -e "$INSTALL_ROOT/manifest.json" ]; then
+            SRC="cockpit-zfs/dist"; [ -d "$SRC" ] || SRC="cockpit-zfs"
+            rsync -a --exclude '.git' --exclude 'node_modules' --exclude '.github' \
+              --exclude 'debian' --exclude 'packaging' --exclude '*.yml' --exclude '*.yaml' \
+              "$SRC/" "$INSTALL_ROOT/"
+          fi
+          test -f "$INSTALL_ROOT/manifest.json" || { echo "manifest.json missing"; exit 1; }
+
+      - name: Create Debian control for cockpit-zfs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          STAGE="$PWD/stage-cockpit"
+          mkdir -p "$STAGE/DEBIAN"
+          cat > "$STAGE/DEBIAN/control" <<'EOF'
+          Package: cockpit-zfs
+          Priority: optional
+          Section: admin
+          Maintainer: GHA <noreply@example.com>
+          Architecture: all
+          Depends: cockpit, python3, sqlite3, python3-libzfs
+          Description: Cockpit plugin for administering ZFS
+           Web UI (Cockpit) module for managing ZFS pools, datasets, and snapshots.
+          EOF
+          sed -i "s|Maintainer: .*|Maintainer: $DEB_MAINTAINER|g" "$STAGE/DEBIAN/control"
+          cat > "$STAGE/DEBIAN/postinst" <<'EOF'
+          #!/bin/sh
+          set -e
+          if command -v systemctl >/dev/null 2>&1; then
+            systemctl try-reload-or-restart cockpit.service 2>/dev/null || true
+          fi
+          exit 0
+          EOF
+          chmod 0755 "$STAGE/DEBIAN/postinst"
+
+      - name: Build cockpit-zfs .deb
+        id: cockpit_deb
+        shell: bash
+        run: |
+          set -euxo pipefail
+          VERSION="${{ steps.meta.outputs.version }}"
+          OUT="$PWD/artifacts"; mkdir -p "$OUT"
+          DEB="${PKG_COCKPIT_NAME}_${VERSION}_all.deb"
+          dpkg-deb --build stage-cockpit "$OUT/$DEB"
+          echo "deb_path=$OUT/$DEB" >> "$GITHUB_OUTPUT"
+          echo "deb_name=$DEB" >> "$GITHUB_OUTPUT"
+
+      - name: Upload cockpit-zfs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.cockpit_deb.outputs.deb_name }}
+          path: ${{ steps.cockpit_deb.outputs.deb_path }}
+          if-no-files-found: error
+          retention-days: 14
+
+      # ---------- Publish GitHub Release (on tag) ----------
+      - name: Publish GitHub Release with both debs (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.pylibzfs_deb.outputs.deb_path }}
+            ${{ steps.cockpit_deb.outputs.deb_path }}
+          generate_release_notes: true
+          prerelease: ${{ inputs.prerelease }}
+
+      # ---------- Build/Update signed APT repo on gh-pages ----------
+      - name: Checkout existing gh-pages (if present)
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: site
+        continue-on-error: true
+
+      - name: Prepare APT repo tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SITE="$PWD/site"
+          mkdir -p "$SITE"
+          mkdir -p "$SITE/pool/${COMPONENT}/c/cockpit-zfs" "$SITE/pool/${COMPONENT}/p/py-libzfs"
+          # Copy new packages to pool (preserve older packages)
+          cp -f artifacts/*cockpit*.deb "$SITE/pool/${COMPONENT}/c/cockpit-zfs/"
+          cp -f artifacts/${PKG_PY_NAME}_*.deb "$SITE/pool/${COMPONENT}/p/py-libzfs/"
+
+      - name: Import GPG key for signing
+        shell: bash
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+          GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
+        run: |
+          set -euxo pipefail
+          export GNUPGHOME="$PWD/.gnupg"
+          mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          # If no KEY_ID provided, pick the first secret key's long id
+          if [ -z "${GPG_KEY_ID:-}" ]; then
+            GPG_KEY_ID=$(gpg --batch --list-secret-keys --keyid-format=long | awk '/^sec/{print $2}' | sed 's|.*/||' | head -n1)
+          fi
+          echo "Using GPG key: $GPG_KEY_ID"
+          echo "GPG_KEY_ID=$GPG_KEY_ID" >> "$GITHUB_ENV"
+          # Export public key to publish under /keys/
+          SITE="$PWD/site"
+          mkdir -p "$SITE/keys"
+          gpg --batch --armor --export "$GPG_KEY_ID" > "$SITE/keys/apt-key.asc"
+          gpg --batch --export "$GPG_KEY_ID" > "$SITE/keys/apt-key.gpg"
+          # Save passphrase to env for next step
+          echo "GPG_PASSPHRASE=$GPG_PASSPHRASE" >> "$GITHUB_ENV"
+
+      - name: Generate APT metadata & sign (InRelease + Release.gpg)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ARCH="$(dpkg --print-architecture)"
+          SITE="$PWD/site"
+          DIST="${DIST}"
+          COMP="${COMPONENT}"
+
+          mkdir -p "$SITE/dists/$DIST/$COMP/binary-$ARCH" "$SITE/dists/$DIST/$COMP/binary-all"
+
+          # Packages files (one for native arch, one for 'all')
+          apt-ftparchive -o APT::FTPArchive::Architecture=$ARCH packages "$SITE/pool/$COMP" \
+            > "$SITE/dists/$DIST/$COMP/binary-$ARCH/Packages"
+          gzip -kf "$SITE/dists/$DIST/$COMP/binary-$ARCH/Packages"
+
+          apt-ftparchive -o APT::FTPArchive::Architecture=all packages "$SITE/pool/$COMP" \
+            > "$SITE/dists/$DIST/$COMP/binary-all/Packages"
+          gzip -kf "$SITE/dists/$DIST/$COMP/binary-all/Packages"
+
+          # Release file
+          cat > "$SITE/release.conf" <<EOF
+          APT::FTPArchive::Release::Origin "GitHub Pages";
+          APT::FTPArchive::Release::Label "GitHub Pages";
+          APT::FTPArchive::Release::Suite "$DIST";
+          APT::FTPArchive::Release::Codename "$DIST";
+          APT::FTPArchive::Release::Architectures "$ARCH all";
+          APT::FTPArchive::Release::Components "$COMP";
+          APT::FTPArchive::Release::Description "APT repo for cockpit-zfs & python3-libzfs";
+          EOF
+          apt-ftparchive -c "$SITE/release.conf" release "$SITE/dists/$DIST" > "$SITE/dists/$DIST/Release"
+
+          # Sign (creates InRelease and Release.gpg)
+          export GNUPGHOME="$PWD/.gnupg"
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+              -u "$GPG_KEY_ID" --clearsign \
+              -o "$SITE/dists/$DIST/InRelease" "$SITE/dists/$DIST/Release"
+
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+              -u "$GPG_KEY_ID" -abs \
+              -o "$SITE/dists/$DIST/Release.gpg" "$SITE/dists/$DIST/Release"
+
+      # Deploy to GitHub Pages (keeps whatever is already in /site plus new content)
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
