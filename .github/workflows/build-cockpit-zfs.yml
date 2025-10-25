@@ -43,6 +43,7 @@ jobs:
           rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.list || true
           apt-get update
 
+      # 1) Tooling: add 'moreutils' so bootstrap.sh can use 'sponge'
       - name: Install build toolchain & deps
         shell: bash
         run: |
@@ -52,12 +53,12 @@ jobs:
             build-essential dpkg-dev fakeroot debhelper devscripts \
             python3 python3-pip python3-packaging \
             git make gzip tar findutils xz-utils \
-            gnupg apt-utils \
+            gnupg apt-utils moreutils \
             nodejs npm
           echo "PIP_BREAK_SYSTEM_PACKAGES=1" >> "$GITHUB_ENV"
           if command -v corepack >/dev/null 2>&1; then corepack enable || true; fi
-
-      # --- Get latest cockpit-zfs release & extract ---
+      
+      # 2) Find the latest tag from Releases (unchanged)
       - name: Get latest 45Drives/cockpit-zfs release tag
         id: latest
         shell: bash
@@ -66,31 +67,55 @@ jobs:
           tag="$(curl -fsSL https://api.github.com/repos/45Drives/cockpit-zfs/releases/latest | jq -r '.tag_name')"
           [ -n "$tag" ] && [ "$tag" != "null" ] || { echo "::error::Could not get latest tag"; exit 1; }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-      - name: Download+extract cockpit-zfs source tarball
+      
+      # 3) Instead of downloading the tarball, do a shallow checkout of that tag + submodules
+      - name: Shallow checkout of that tag (with submodules)
         id: fetch_src
         shell: bash
         run: |
           set -euxo pipefail
           TAG="${{ steps.latest.outputs.tag }}"
-          curl -fL "https://github.com/45Drives/cockpit-zfs/archive/refs/tags/${TAG}.tar.gz" -o src.tar.gz
-          tar -xzf src.tar.gz
-          SRC_DIR="$(echo cockpit-zfs-*/ | cut -d/ -f1)"
-          test -d "$SRC_DIR"
-          echo "src=$SRC_DIR" >> "$GITHUB_OUTPUT"
-
+          git clone --depth 1 --branch "$TAG" https://github.com/45Drives/cockpit-zfs.git src
+          git -C src submodule update --init --depth 1 --recursive
+          echo "src=src" >> "$GITHUB_OUTPUT"
+      
+      # 4) (Optional but per your spec) Parse Cython pin from README, default to 0.29.35
       - name: Extract Cython pin from README (fallback to 0.29.35)
         id: cython
         shell: bash
         run: |
           set -euo pipefail
-          SRC="${{ steps.fetch_src.outputs.src }}"
-          ver="$(grep -Eo 'Cython( *==| *:| *=) *[0-9]+\.[0-9]+(\.[0-9]+)?' "$SRC/README.md" \
+          ver="$(grep -Eo 'Cython( *==| *:| *=) *[0-9]+\.[0-9]+(\.[0-9]+)?' "src/README.md" \
                  | head -n1 | sed -E 's/.*[=: ] *//')"
           [ -n "${ver:-}" ] || ver="0.29.35"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
-          echo "Using Cython==$ver"
           pip3 install "Cython==$ver"
+      
+      # 5) Build (now that submodules/workspaces exist, make can run bootstrap.sh safely)
+      - name: Build cockpit-zfs
+        shell: bash
+        working-directory: ${{ steps.fetch_src.outputs.src }}
+        run: |
+          set -euxo pipefail
+          # If configure exists, follow your preferred flow; otherwise use native build
+          if [ -x ./configure ]; then
+            ./configure --prefix=/usr
+            make -j"$(nproc)"
+          else
+            make -j"$(nproc)" || true        # runs bootstrap.sh (needs sponge) and yarn build
+            if [ ! -d dist ]; then
+              # Fallback: try explicit Node build if Makefile didn’t build dist
+              corepack enable || true
+              if [ -f yarn.lock ]; then
+                (corepack yarn install --immutable) || corepack yarn install
+                corepack yarn build || corepack yarn run build
+              elif [ -f package.json ]; then
+                npm ci || npm i
+                npm run build
+              fi
+            fi
+            test -d dist || { echo "::error::No dist/ produced"; exit 1; }
+          fi
 
       # --- Build cockpit-zfs with your flow, but only run ./configure if it exists ---
       - name: Build cockpit-zfs (configure if present, otherwise native build)
