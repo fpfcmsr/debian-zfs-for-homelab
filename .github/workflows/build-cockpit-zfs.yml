@@ -79,6 +79,7 @@ jobs:
           git clone --depth 1 --branch "$TAG" https://github.com/45Drives/cockpit-zfs.git src
           git -C src submodule update --init --depth 1 --recursive
           echo "src=src" >> "$GITHUB_OUTPUT"
+          ls
       
       # 4) (Optional but per your spec) Parse Cython pin from README, default to 0.29.35
       - name: Extract Cython pin from README (fallback to 0.29.35)
@@ -97,10 +98,14 @@ jobs:
         working-directory: ${{ steps.fetch_src.outputs.src }}
         run: |
           set -euxo pipefail
-      
+
+          git clone https://github.com/45Drives/python3-libzfs.git
+          cd python3-libzfs
+    
           if [ -x ./configure ]; then
             ./configure --prefix=/usr
-            make -j"$(nproc)"
+            make 
+            make install
           else
             echo "No ./configure; building with Yarn only (skip Makefile & root)."
       
