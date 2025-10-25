@@ -1,4 +1,4 @@
-name: Build & publish py-libzfs + cockpit-zfs
+name: Build & publish cockpit-zfs
 
 on:
   push:
@@ -6,9 +6,6 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-      py_ref:
-        description: "truenas/py-libzfs ref (tag/branch/sha). Default: latest tag or default branch"
-        required: false
       cockpit_ref:
         description: "45Drives/cockpit-zfs ref (tag/branch/sha). Default: latest tag or default branch"
         required: false
@@ -37,9 +34,7 @@ jobs:
 
     env:
       DEB_MAINTAINER: "GitHub Actions <noreply@github.com>"
-      PY_LIBZFS_REPO: "https://github.com/truenas/py-libzfs.git"
       COCKPIT_REPO:  "https://github.com/45Drives/cockpit-zfs.git"
-      PKG_PY_NAME: "python3-libzfs"
       PKG_COCKPIT_NAME: "cockpit-zfs"
       DIST: "trixie"
       COMPONENT: "main"
@@ -88,122 +83,6 @@ jobs:
             make gzip tar findutils xz-utils gnupg apt-utils \
             nodejs npm
           if command -v corepack >/dev/null 2>&1; then corepack enable || true; fi
-
-      # ---------- Build python3-libzfs ----------
-      - name: Clone truenas/py-libzfs
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git clone --filter=blob:none "$PY_LIBZFS_REPO" py-libzfs
-          cd py-libzfs
-          git fetch --tags --quiet
-
-          REQ_REF="${{ github.event.inputs.py_ref || '' }}"
-      
-          # Try branch, then tag, then SHA; otherwise fall back
-          if [ -n "$REQ_REF" ]; then
-            if git rev-parse -q --verify "refs/heads/$REQ_REF" >/dev/null; then
-              git checkout "$REQ_REF"
-            elif git rev-parse -q --verify "refs/tags/$REQ_REF" >/dev/null; then
-              git checkout "refs/tags/$REQ_REF"
-            elif git cat-file -e "$REQ_REF^{commit}" 2>/dev/null; then
-              git checkout "$REQ_REF"
-            elif git ls-remote --exit-code --heads origin "$REQ_REF" >/dev/null; then
-              git checkout --track "origin/$REQ_REF"
-            elif git ls-remote --exit-code --tags origin "$REQ_REF" >/dev/null; then
-              git checkout "tags/$REQ_REF"
-            else
-              echo "::warning title=py-libzfs::Input ref '$REQ_REF' not found; falling back to latest tag (or default branch)."
-              FallbackRef="$(git describe --tags --abbrev=0 2>/dev/null || git rev-parse --abbrev-ref HEAD)"
-              git checkout "$FallbackRef"
-            fi
-          else
-            FallbackRef="$(git describe --tags --abbrev=0 2>/dev/null || git rev-parse --abbrev-ref HEAD)"
-            git checkout "$FallbackRef"
-          fi
-
-      - name: Bootstrap py-libzfs (generate config.pxi via ./configure)
-        shell: bash
-        working-directory: py-libzfs
-        run: |
-          set -euxo pipefail
-          git fetch --tags --quiet || true
-      
-          # Prefer system pkg-config hints for libzfs
-          CFLAGS="$(pkg-config --cflags libzfs 2>/dev/null || true)"
-          LDFLAGS="$(pkg-config --libs   libzfs 2>/dev/null || true)"
-      
-          if [ -x ./configure ]; then
-            CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" ./configure --prefix=/usr
-          elif [ -x ./autogen.sh ]; then
-            ./autogen.sh
-            CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" ./configure --prefix=/usr
-          else
-            echo "::error::py-libzfs lacks configure/autogen.sh in this ref; cannot generate pxd/config.pxi"
-            exit 1
-          fi
-      
-          # Sanity check: config.pxi must exist after configure
-          test -f pxd/config.pxi || test -f config.pxi || {
-            echo "::error::configure did not generate config.pxi"; find . -maxdepth 2 -name '*config*.pxi' -ls; exit 1;
-          }
-
-      - name: Build wheel for py-libzfs (in venv)
-        id: pylibzfs_build
-        shell: bash
-        working-directory: py-libzfs
-        run: |
-          set -euxo pipefail
-          python3 -m venv .venv
-          . .venv/bin/activate
-          pip install -U pip wheel build
-          python -m build --wheel
-          WHEEL=$(ls dist/*.whl | head -n1)
-          echo "wheel=$WHEEL" >> "$GITHUB_OUTPUT"
-          BN=$(basename "$WHEEL"); VER="${BN#py_libzfs-}"; VER="${VER%%-*}"
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
-
-      - name: Package python3-libzfs as .deb
-        id: pylibzfs_deb
-        shell: bash
-        run: |
-          set -euxo pipefail
-          ARCH="$(dpkg --print-architecture)"
-          VER="${{ steps.pylibzfs_build.outputs.version }}"
-          STAGE="$PWD/stage-pylibzfs"
-          mkdir -p "$STAGE"
-
-          # Use a temp venv so pip can install without PEP 668 complaints
-          python3 -m venv /tmp/pylibzfs-venv
-          . /tmp/pylibzfs-venv/bin/activate
-          pip install --no-deps --prefix=/usr --root="$STAGE" "${{ steps.pylibzfs_build.outputs.wheel }}"
-          
-          mkdir -p "$STAGE/DEBIAN"
-          cat > "$STAGE/DEBIAN/control" <<EOF
-          Package: ${PKG_PY_NAME}
-          Priority: optional
-          Section: python
-          Maintainer: ${DEB_MAINTAINER}
-          Architecture: ${ARCH}
-          Depends: python3, zfsutils-linux
-          Description: Python 3 bindings for libzfs
-           Pythonic bindings for libzfs for ZFS management and queries.
-          EOF
-          printf '#!/bin/sh\nset -e\nexit 0\n' > "$STAGE/DEBIAN/postinst"
-          chmod 0755 "$STAGE/DEBIAN/postinst"
-          OUT="$PWD/artifacts"; mkdir -p "$OUT"
-          DEB="${PKG_PY_NAME}_${VER}_${ARCH}.deb"
-          dpkg-deb --build "$STAGE" "$OUT/$DEB"
-          echo "deb_path=$OUT/$DEB" >> "$GITHUB_OUTPUT"
-          echo "deb_name=$DEB" >> "$GITHUB_OUTPUT"
-
-      - name: Upload python3-libzfs artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.pylibzfs_deb.outputs.deb_name }}
-          path: ${{ steps.pylibzfs_deb.outputs.deb_path }}
-          if-no-files-found: error
-          retention-days: 14
 
       # ---------- Build cockpit-zfs ----------
       - name: Clone 45Drives/cockpit-zfs
@@ -310,7 +189,7 @@ jobs:
           Section: admin
           Maintainer: GHA <noreply@example.com>
           Architecture: all
-          Depends: cockpit, python3, sqlite3, python3-libzfs
+          Depends: cockpit, python3, sqlite3, python3-pyzfs
           Description: Cockpit plugin for administering ZFS
            Web UI (Cockpit) module for managing ZFS pools, datasets, and snapshots.
           EOF
@@ -351,7 +230,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ${{ steps.pylibzfs_deb.outputs.deb_path }}
             ${{ steps.cockpit_deb.outputs.deb_path }}
           generate_release_notes: true
           prerelease: ${{ inputs.prerelease }}
@@ -370,10 +248,9 @@ jobs:
           set -euxo pipefail
           SITE="$PWD/site"
           mkdir -p "$SITE"
-          mkdir -p "$SITE/pool/${COMPONENT}/c/cockpit-zfs" "$SITE/pool/${COMPONENT}/p/py-libzfs"
+          mkdir -p "$SITE/pool/${COMPONENT}/c/cockpit-zfs" 
           # Copy new packages to pool (preserve older packages)
           cp -f artifacts/*cockpit*.deb "$SITE/pool/${COMPONENT}/c/cockpit-zfs/"
-          cp -f artifacts/${PKG_PY_NAME}_*.deb "$SITE/pool/${COMPONENT}/p/py-libzfs/"
 
       - name: Import GPG key for signing
         shell: bash
@@ -428,7 +305,7 @@ jobs:
           APT::FTPArchive::Release::Codename "$DIST";
           APT::FTPArchive::Release::Architectures "$ARCH all";
           APT::FTPArchive::Release::Components "$COMP";
-          APT::FTPArchive::Release::Description "APT repo for cockpit-zfs & python3-libzfs";
+          APT::FTPArchive::Release::Description "APT repo for cockpit-zfs";
           EOF
           apt-ftparchive -c "$SITE/release.conf" release "$SITE/dists/$DIST" > "$SITE/dists/$DIST/Release"
 
