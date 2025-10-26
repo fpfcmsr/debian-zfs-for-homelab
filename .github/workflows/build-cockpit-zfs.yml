@@ -27,6 +27,12 @@ jobs:
           echo "✅ Cloned cockpit-zfs version:"
           git rev-parse HEAD
 
+      - name: Add contrib so zfs can be installed 
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sed -i 's/\bmain\b/main contrib/g' /etc/apt/sources.list.d/debian.sources
+
       - name: Install build dependencies
         run: |
           apt-get update
