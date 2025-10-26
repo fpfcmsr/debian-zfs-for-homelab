@@ -17,6 +17,8 @@ jobs:
     env:
       DEBIAN_FRONTEND: noninteractive
       TZ: UTC
+      GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
 
     steps:
       - name: Clone upstream cockpit-zfs repository
