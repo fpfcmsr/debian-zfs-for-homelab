@@ -1,289 +1,110 @@
-name: Build cockpit-zfs (Debian trixie, monthly + APT repo)
+name: Build & Publish Cockpit ZFS (Debian Bookworm)
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
   schedule:
-    - cron: "0 6 1 * *" # monthly, 06:00 UTC on the 1st
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
+    - cron: "0 6 1 * *" # monthly build 
+    
 jobs:
-  trixie:
+  build:
+    name: Build Cockpit ZFS for Debian Bookworm
     runs-on: ubuntu-latest
-    container: debian:trixie-slim
+
+    container:
+      image: debian:bookworm
+      options: --init
 
     env:
-      DEB_MAINTAINER: "GitHub Actions <noreply@github.com>"
-      DIST: "trixie"
-      COMPONENT: "main"
+      DEBIAN_FRONTEND: noninteractive
+      TZ: UTC
 
     steps:
-      - name: Configure APT (deb822, include contrib) + update
-        shell: bash
+      - name: Clone upstream cockpit-zfs repository
         run: |
-          set -euxo pipefail
-          . /etc/os-release
-          DIST="${VERSION_CODENAME:-trixie}"
-          cat >/etc/apt/sources.list.d/debian.sources <<EOF
-          Types: deb
-          URIs: http://deb.debian.org/debian
-          Suites: ${DIST} ${DIST}-updates
-          Components: main contrib
-          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+          apt-get update && apt-get install -y git
+          git clone --depth=1 https://github.com/45Drives/cockpit-zfs.git
+          cd cockpit-zfs
+          echo "✅ Cloned cockpit-zfs version:"
+          git rev-parse HEAD
 
-          Types: deb
-          URIs: http://security.debian.org/debian-security
-          Suites: ${DIST}-security
-          Components: main contrib
-          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
-          EOF
-          rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.list || true
+      - name: Install build dependencies
+        run: |
           apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential devscripts debhelper fakeroot \
+            lintian python3-all python3-setuptools python3-wheel \
+            python3-cython python3-pip pkg-config \
+            libglib2.0-dev libsystemd-dev libzfs-dev \
+            zfsutils-linux zfs-dkms reprepro curl ca-certificates gnupg
 
-      # 1) Tooling: add 'moreutils' so bootstrap.sh can use 'sponge'
-      - name: Install build toolchain & deps
-        shell: bash
+      - name: Set up GPG for signing
         run: |
-          set -euxo pipefail
-          DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            ca-certificates curl jq rsync pkg-config \
-            build-essential debhelper devscripts fakeroot dpkg-dev dh-python \
-            python3 python3-pip python3-pyzfs python3-packaging python3-dev python3-setuptools python3-wheel python3-venv python3-packaging \
-            zfsutils-linux libzfslinux-dev \
-            git make gzip tar findutils xz-utils gnupg apt-utils \
-            gnupg apt-utils moreutils default-jre-headless graphviz \
-            nodejs npm
-          echo "PIP_BREAK_SYSTEM_PACKAGES=1" >> "$GITHUB_ENV"
-          if command -v corepack >/dev/null 2>&1; then corepack enable || true; fi
-      
-      # 2) Find the latest tag from Releases (unchanged)
-      - name: Get latest 45Drives/cockpit-zfs release tag
-        id: latest
-        shell: bash
+          # Create the GPG directory
+          mkdir -p ~/.gnupg
+          chmod 700 ~/.gnupg
+
+          # Import the private key from GitHub secrets
+          echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+
+          # Set up GPG to use the key for signing
+          echo -e "pinentry-mode loopback\nuse-agent\n" > ~/.gnupg/gpg.conf
+          echo "default-key $(gpg --list-secret-keys --with-colons | grep 'sec' | cut -d: -f5)" > ~/.gnupg/gpg.conf
+
+          # Set the passphrase for the key (loaded from the secret)
+          echo "$APT_GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --edit-key $(gpg --list-secret-keys --with-colons | grep 'sec' | cut -d: -f5) trust quit
+
+          echo "✅ GPG setup complete."
+
+      - name: Build Debian package
+        working-directory: cockpit-zfs/packaging/debian-bookworm
         run: |
-          set -euo pipefail
-          tag="$(curl -fsSL https://api.github.com/repos/45Drives/cockpit-zfs/releases/latest | jq -r '.tag_name')"
-          [ -n "$tag" ] && [ "$tag" != "null" ] || { echo "::error::Could not get latest tag"; exit 1; }
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-      
-      # 3) Instead of downloading the tarball, do a shallow checkout of that tag + submodules
-      - name: Shallow checkout of that tag (with submodules)
-        id: fetch_src
-        shell: bash
-        run: |
-          set -euxo pipefail
-          TAG="${{ steps.latest.outputs.tag }}"
-          git clone --depth 1 --branch "$TAG" https://github.com/45Drives/cockpit-zfs.git src
-          git -C src submodule update --init --depth 1 --recursive
-          echo "src=src" >> "$GITHUB_OUTPUT"
-          cd src
-      
-      # 4) (Optional but per your spec) Parse Cython pin from README, default to 0.29.35
-      - name: Extract Cython pin from README (fallback to 0.29.35)
-        id: cython
-        shell: bash
-        run: |
-          set -euo pipefail
-          ver="$(grep -Eo 'Cython( *==| *:| *=) *[0-9]+\.[0-9]+(\.[0-9]+)?' "src/README.md" \
-                 | head -n1 | sed -E 's/.*[=: ] *//')"
-          [ -n "${ver:-}" ] || ver="0.29.35"
-          echo "version=$ver" >> "$GITHUB_OUTPUT"
-          pip3 install "Cython==${{ steps.cython.outputs.version }}" legacy-cgi
-      
-      - name: Build cockpit-zfs (prefer configure; otherwise Yarn only, skip root)
-        shell: bash
-        working-directory: ${{ steps.fetch_src.outputs.src }}
-        run: |
-          set -euxo pipefail
+          echo "⚙️ Building cockpit-zfs Debian package..."
+          dpkg-buildpackage -b -us -uc
+          mkdir -p /artifacts
+          cp ../*.deb /artifacts/
 
-          git clone https://github.com/45Drives/python3-libzfs.git
-          cd python3-libzfs
-    
-          if [ -x ./configure ]; then
-            ./configure --prefix=/usr
-            make 
-            make install
-          else
-            echo "No ./configure; building with Yarn only (skip Makefile & root)."
-      
-            # Use node-modules linker to avoid PnP friction in CI
-            export YARN_NODE_LINKER=node-modules
-            corepack enable || true
-      
-            # Install deps (allow lockfile updates if needed)
-            YARN_ENABLE_IMMUTABLE_INSTALLS=false corepack yarn install
-      
-            # Root tsconfig expects electron types; install at root
-            corepack yarn add -D @types/electron
-
-            # Build all workspaces that define "build" (Yarn 4 requires -A/-R)
-            corepack yarn workspaces foreach -Av --topological-dev run build || true
-      
-            # Build only non-private workspaces, topologically (skips root workspace)
-            #corepack yarn workspaces foreach -R --no-private --topological-dev run build || true
-      
-            # DO NOT call `yarn run build` at the root (it tries 'build:app' and fails)
-          fi
-
-
-      - name: Stage install tree (manual, from dist/)
-        id: stage
-        shell: bash
-        run: |
-          set -euxo pipefail
-          SRC="${{ steps.fetch_src.outputs.src }}"
-          STAGE="$PWD/stage"
-          mkdir -p "$STAGE"
-      
-          # Find the cockpit module's built dist (pick the first manifest we see)
-          MANIFEST_PATH="$(find "$SRC" -type f -path '*/dist/manifest.json' -print -quit || true)"
-          [ -n "$MANIFEST_PATH" ] || { echo "::error::No dist/manifest.json produced"; exit 1; }
-          DIST_DIR="$(dirname "$MANIFEST_PATH")"
-      
-          MODULE="$(jq -r '.name // empty' "$MANIFEST_PATH" || true)"
-          [ -n "$MODULE" ] || MODULE="zfs"
-      
-          INSTALL_ROOT="$STAGE/usr/share/cockpit/${MODULE}"
-          mkdir -p "$INSTALL_ROOT"
-          rsync -a --delete "$DIST_DIR/" "$INSTALL_ROOT/"
-      
-          test -f "$INSTALL_ROOT/manifest.json" || { echo "::error::manifest.json missing in staged tree"; exit 1; }
-      
-          # Version: prefer package.json, else the release tag
-          VER=""
-          if [ -f "${SRC}/package.json" ]; then
-            VER="$(jq -r '.version // empty' "${SRC}/package.json" || echo "")"
-          fi
-          [ -n "$VER" ] || VER="${{ steps.latest.outputs.tag }}"
-          VER="${VER#v}"
-      
-          echo "MODULE=$MODULE" >> "$GITHUB_ENV"
-          echo "VERSION=$VER"   >> "$GITHUB_ENV"
-
-
-
-      - name: Build .deb 
-        id: deb
-        shell: bash
-        run: |
-          set -euxo pipefail
-          STAGE="$PWD/stage"
-          mkdir -p "$STAGE/DEBIAN"
-          {
-            printf 'Package: cockpit-zfs\n'
-            printf 'Priority: optional\n'
-            printf 'Section: admin\n'
-            printf 'Maintainer: %s\n' "$DEB_MAINTAINER"
-            printf 'Architecture: all\n'
-            printf 'Depends: cockpit, python3, sqlite3, python3-pyzfs\n'
-            printf 'Description: Cockpit plugin for administering ZFS\n'
-            printf ' Web UI (Cockpit) module for managing ZFS pools, datasets, and snapshots.\n'
-          } > "$STAGE/DEBIAN/control"
-
-          printf '%s\n' '#!/bin/sh' 'set -e' \
-            'if command -v systemctl >/dev/null 2>&1; then' \
-            '  systemctl try-reload-or-restart cockpit.service 2>/dev/null || true' \
-            'fi' 'exit 0' > "$STAGE/DEBIAN/postinst"
-          chmod 0755 "$STAGE/DEBIAN/postinst"
-
-          OUT="$PWD/artifacts"; mkdir -p "$OUT"
-          DEB="cockpit-zfs_${VERSION}_all.deb"
-          dpkg-deb --build "$STAGE" "$OUT/$DEB"
-          echo "path=$OUT/$DEB" >> "$GITHUB_OUTPUT"
-          echo "name=$DEB"      >> "$GITHUB_OUTPUT"
-
-      - name: Upload artifact
+      - name: Upload built packages
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.deb.outputs.name }}
-          path: ${{ steps.deb.outputs.path }}
-          if-no-files-found: error
+          name: cockpit-zfs-debian-bookworm
+          path: /artifacts/*.deb
 
-      # ---------- Build/Update signed APT repo on GitHub Pages ----------
-      - name: Checkout existing gh-pages (if present)
-        uses: actions/checkout@v4
+      - name: Prepare APT repository with signed packages
+        run: |
+          mkdir -p repo/{conf,pool/main}
+          cat > repo/conf/distributions <<'EOF'
+          Origin: cockpit-zfs
+          Label: cockpit-zfs
+          Codename: bookworm
+          Architectures: amd64
+          Components: main
+          Description: Cockpit ZFS packages for Debian Bookworm
+          SignWith: yes
+          EOF
+
+          # Add the .deb packages to the repo and sign them
+          reprepro -b repo includedeb bookworm /artifacts/*.deb
+
+          # Sign the repository metadata files
+          for file in repo/dists/bookworm/Release*; do
+            gpg --batch --yes -u $(gpg --list-secret-keys --with-colons | grep 'sec' | cut -d: -f5) --passphrase "$APT_GPG_PASSPHRASE" --armor --output "$file.asc" --detach-sig "$file"
+          done
+
+          echo "✅ APT repository prepared and signed."
+
+      - name: Publish APT repository to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          ref: gh-pages
-          path: site
-        continue-on-error: true
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: repo
+          force_orphan: true
+          keep_files: false
+          commit_message: "Update Debian repo (Bookworm) from 45Drives/cockpit-zfs"
 
-      - name: Prepare APT repo tree
-        shell: bash
+      - name: Display repo info
         run: |
-          set -euxo pipefail
-          SITE="$PWD/site"
-          mkdir -p "$SITE/pool/${COMPONENT}/c/cockpit-zfs"
-          cp -f "${{ steps.deb.outputs.path }}" "$SITE/pool/${COMPONENT}/c/cockpit-zfs/"
-
-      - name: Import GPG key for signing
-        shell: bash
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
-          GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
-          GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
-        run: |
-          set -euxo pipefail
-          export GNUPGHOME="$PWD/.gnupg"
-          mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"
-          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-          if [ -z "${GPG_KEY_ID:-}" ]; then
-            GPG_KEY_ID=$(gpg --batch --list-secret-keys --keyid-format=long | awk '/^sec/{print $2}' | sed 's|.*/||' | head -n1)
-          fi
-          echo "GPG_KEY_ID=$GPG_KEY_ID" >> "$GITHUB_ENV"
-          SITE="$PWD/site"
-          mkdir -p "$SITE/keys"
-          gpg --batch --armor --export "$GPG_KEY_ID" > "$SITE/keys/apt-key.asc"
-          gpg --batch --export "$GPG_KEY_ID" > "$SITE/keys/apt-key.gpg"
-          echo "GPG_PASSPHRASE=${GPG_PASSPHRASE}" >> "$GITHUB_ENV"
-
-      - name: Generate APT metadata & sign
-        shell: bash
-        run: |
-          set -euxo pipefail
-          ARCH="$(dpkg --print-architecture)"
-          SITE="$PWD/site"
-          DIST="${DIST}"
-          COMP="${COMPONENT}"
-
-          mkdir -p "$SITE/dists/$DIST/$COMP/binary-$ARCH" "$SITE/dists/$DIST/$COMP/binary-all"
-
-          apt-ftparchive -o APT::FTPArchive::Architecture=$ARCH packages "$SITE/pool/$COMP" \
-            > "$SITE/dists/$DIST/$COMP/binary-$ARCH/Packages"
-          gzip -kf "$SITE/dists/$DIST/$COMP/binary-$ARCH/Packages"
-
-          apt-ftparchive -o APT::FTPArchive::Architecture=all packages "$SITE/pool/$COMP" \
-            > "$SITE/dists/$DIST/$COMP/binary-all/Packages"
-          gzip -kf "$SITE/dists/$DIST/$COMP/binary-all/Packages"
-
-          {
-            printf 'APT::FTPArchive::Release::Origin "GitHub Pages";\n'
-            printf 'APT::FTPArchive::Release::Label "GitHub Pages";\n'
-            printf 'APT::FTPArchive::Release::Suite "%s";\n' "$DIST"
-            printf 'APT::FTPArchive::Release::Codename "%s";\n' "$DIST"
-            printf 'APT::FTPArchive::Release::Architectures "%s";\n' "$ARCH all"
-            printf 'APT::FTPArchive::Release::Components "%s";\n' "$COMP"
-            printf 'APT::FTPArchive::Release::Description "APT repo for cockpit-zfs";\n'
-          } > "$SITE/release.conf"
-
-          apt-ftparchive -c "$SITE/release.conf" release "$SITE/dists/$DIST" > "$SITE/dists/$DIST/Release"
-
-          export GNUPGHOME="$PWD/.gnupg"
-          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
-              -u "$GPG_KEY_ID" --clearsign \
-              -o "$SITE/dists/$DIST/InRelease" "$SITE/dists/$DIST/Release"
-
-          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
-              -u "$GPG_KEY_ID" -abs \
-              -o "$SITE/dists/$DIST/Release.gpg" "$SITE/dists/$DIST/Release"
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          echo "✅ Repository published!"
+          echo "You can now install it with:"
+          echo "sudo sh -c 'echo \"deb [signed-by=/usr/share/keyrings/<your-username>-key.gpg] https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }} bookworm main\" > /etc/apt/sources.list.d/cockpit-zfs.list'"
+          echo "sudo apt update && sudo apt install cockpit-zfs"
