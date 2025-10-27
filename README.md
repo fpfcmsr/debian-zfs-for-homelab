@@ -9,7 +9,7 @@
 ### - easy way of managing zfs (using cockpit extensions from 45Drives)
   - the old way is just cloning https://github.com/45Drives/cockpit-zfs-manager (I currently use this)
   - the new way I am testing (openzfs 2.0+) is currently being built through github actions from https://github.com/45Drives/cockpit-zfs 
-on Debian Bookworm: 
+  - on Debian Bookworm: 
 sudo install -d -m 0755 /usr/share/keyrings 
 curl -fsSL https://<OWNER>.github.io/<REPO>/KEY.gpg | sudo tee /usr/share/keyrings/<REPO>-archive-keyring.gpg >/dev/null 
 echo "deb [signed-by=/usr/share/keyrings/<REPO>-archive-keyring.gpg] https://<OWNER>.github.io/<REPO> bookworm main" | sudo tee /etc/apt/sources.list.d/<REPO>.list 
