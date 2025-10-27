@@ -57,7 +57,7 @@ jobs:
           set -euxo pipefail
           make install DESTDIR="$PWD/out" PREFIX=/usr
 
-      - name: Build .deb from staged files (Architecture: all)
+      - name: Build .deb from staged files (Architecture = all)
         id: makedeb
         shell: bash
         run: |
