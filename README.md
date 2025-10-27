@@ -11,8 +11,8 @@
   - the new way I am testing (openzfs 2.0+) is currently being built through github actions from https://github.com/45Drives/cockpit-zfs  
   - on Debian Bookworm:  
 sudo install -d -m 0755 /usr/share/keyrings  
-curl -fsSL https://<OWNER>.github.io/<REPO>/KEY.gpg | sudo tee /usr/share/keyrings/<REPO>-archive-keyring.gpg >/dev/null  
-echo "deb [signed-by=/usr/share/keyrings/<REPO>-archive-keyring.gpg] https://<OWNER>.github.io/<REPO> bookworm main" | sudo tee /etc/apt/sources.list.d/<REPO>.list  
+curl -fsSL https://fpfcmsr.github.io/debian-zfs-for-homelab/KEY.gpg | sudo tee /usr/share/keyrings/debian-zfs-for-homelab-archive-keyring.gpg >/dev/null  
+echo "deb [signed-by=/usr/share/keyrings/debian-zfs-for-homelab-archive-keyring.gpg] https://fpfcmsr.github.io/debian-zfs-for-homelab bookworm main" | sudo tee /etc/apt/sources.list.d/debian-zfs-for-homelab.list  
 sudo apt update  
 sudo apt install cockpit-zfs  
 
