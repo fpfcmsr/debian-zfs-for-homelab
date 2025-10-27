@@ -34,7 +34,7 @@ jobs:
             zfsutils-linux libzfslinux-dev python3-libzfs \
             nodejs npm jq moreutils yarnpkg cockpit \
             default-jre-headless graphviz \
-            gnupg dpkg-dev apt-utils xz-utils
+            gnupg dpkg-dev apt-utils xz-utils rsync
           ln -sf /usr/bin/yarnpkg /usr/local/bin/yarn
 
       - name: Checkout 45Drives/cockpit-zfs (recursive)
