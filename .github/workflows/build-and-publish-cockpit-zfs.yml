@@ -75,7 +75,7 @@ jobs:
           # Copy staged files into package root
           rsync -a out/ "$PKGROOT/"
 
-          # Minimal control file (tweak Maintainer/Depends as you prefer)
+          # Package Description
           cat > "$PKGROOT/DEBIAN/control" <<EOF
           Package: cockpit-zfs
           Version: ${VERSION}
@@ -107,16 +107,18 @@ jobs:
           DEB="${{ steps.makedeb.outputs.deb_path }}"
       
           REPO="$PWD/repo"
-          PKGDIR="$REPO/dists/bookworm/main/binary-${ARCH}"
+          PKG_REL="dists/bookworm/main/binary-${ARCH}"   # relative path (important)
+          PKGDIR="$REPO/${PKG_REL}"
           mkdir -p "$PKGDIR"
       
           # Put the .deb where it will be indexed
           cp -a "$DEB" "$PKGDIR/"
       
-          # Generate Packages, Packages.gz, Packages.xz
-          dpkg-scanpackages --multiversion "$PKGDIR" > "$PKGDIR/Packages"
-          gzip -kf "$PKGDIR/Packages"
-          xz -f "$PKGDIR/Packages"
+          # Generate Packages, with relative paths
+          pushd "$REPO" >/dev/null
+          dpkg-scanpackages --multiversion "$PKG_REL" > "$PKG_REL/Packages"
+          gzip -kf "$PKG_REL/Packages"
+          xz -f "$PKG_REL/Packages"
       
           # ----- Import signing key from secret -----
           GNUPGHOME="$PWD/.gnupg"
@@ -144,7 +146,6 @@ jobs:
           gpg --homedir "$GNUPGHOME" --export "$KEYFPR" > "$REPO/KEY.gpg"
       
           # Create Release and sign it
-          pushd "$REPO" >/dev/null
           apt-ftparchive \
             -o APT::FTPArchive::Release::Suite=bookworm \
             -o APT::FTPArchive::Release::Codename=bookworm \
@@ -161,6 +162,9 @@ jobs:
             gpg --homedir "$GNUPGHOME" --batch -u "$KEYFPR" --clearsign -o dists/bookworm/InRelease dists/bookworm/Release
           fi
           popd >/dev/null
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
