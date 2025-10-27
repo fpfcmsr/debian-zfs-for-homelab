@@ -81,7 +81,7 @@ jobs:
           Version: ${VERSION}
           Section: admin
           Priority: optional
-          Architecture: all
+          Architecture: amd64
           Maintainer: GitHub Actions <noreply@github.com>
           Depends: cockpit, python3, python3-libzfs, zfsutils-linux
           Homepage: https://github.com/45Drives/cockpit-zfs
@@ -93,7 +93,7 @@ jobs:
           dpkg-deb --build "$PKGROOT" "$DEB"
           echo "deb_path=$DEB" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "arch=all" >> "$GITHUB_OUTPUT"
+          echo "arch=amd64" >> "$GITHUB_OUTPUT"
 
       - name: Create signed APT repository structure
         env:
