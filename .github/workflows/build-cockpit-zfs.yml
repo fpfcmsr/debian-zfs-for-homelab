@@ -3,12 +3,25 @@ name: Build & Publish Cockpit ZFS (Debian Bookworm)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 6 1 * *" # monthly build 
-    
+    - cron: "0 6 1 * *" # monthly build
+
+permissions:
+  contents: write     # required for creating releases and pushing to gh-pages
+  pages: write        # required for Pages deployment
+  id-token: write     # required for Pages deployment
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 jobs:
   build:
-    name: Build Cockpit ZFS for Debian Bookworm
+    name: Build & Publish (bookworm)
     runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
 
     container:
       image: debian:bookworm
@@ -17,104 +30,240 @@ jobs:
     env:
       DEBIAN_FRONTEND: noninteractive
       TZ: UTC
-      GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
-      GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+      DIST: bookworm
+      COMPONENT: main
+      PACKAGE: cockpit-zfs
 
     steps:
-      - name: Clone upstream cockpit-zfs repository
-        run: |
-          apt-get update && apt-get install -y git
-          git clone --depth=1 https://github.com/45Drives/cockpit-zfs.git
-          cd cockpit-zfs
-          echo "✅ Cloned cockpit-zfs version:"
-          git rev-parse HEAD
-
-      - name: Add contrib so zfs can be installed 
+      # --- Build ----------------------------------------------------------------
+      - name: Install base tools
         shell: bash
         run: |
           set -euxo pipefail
-          sed -i 's/\bmain\b/main contrib/g' /etc/apt/sources.list.d/debian.sources
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git curl gnupg jq xz-utils 
+
+      - name: Clone upstream (recursive)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 --recurse-submodules https://github.com/45Drives/cockpit-zfs.git
+          cd cockpit-zfs
+          echo "✅ HEAD: $(git rev-parse HEAD)"
+
+      - name: Enable contrib (so ZFS installs)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # classic sources.list
+          if [ -f /etc/apt/sources.list ]; then
+            sed -i 's/\bmain\b/main contrib/g' /etc/apt/sources.list
+          fi
+          # deb822 /etc/apt/sources.list.d/debian.sources
+          if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+            if ! grep -qE '^Components:.*\bcontrib\b' /etc/apt/sources.list.d/debian.sources; then
+              sed -i -E 's/^Components:(.*)$/Components:\1 contrib/' /etc/apt/sources.list.d/debian.sources
+            fi
+          fi
 
       - name: Install build dependencies
+        shell: bash
         run: |
+          set -euxo pipefail
           apt-get update
-          apt-get install -y \
-            ca-certificates curl jq rsync pkg-config \
+          apt-get install -y --no-install-recommends \
             build-essential debhelper devscripts fakeroot dpkg-dev dh-python \
-            python3 python3-pip python3-pyzfs python3-packaging python3-dev python3-setuptools python3-wheel python3-venv python3-packaging \
-            zfsutils-linux libzfslinux-dev \
-            git make gzip tar findutils xz-utils gnupg apt-utils \
-            gnupg apt-utils moreutils default-jre-headless graphviz \
-            nodejs npm
-
-      - name: Set up GPG for signing
-        run: |
-          # Create the GPG directory
-          mkdir -p ~/.gnupg
-          chmod 700 ~/.gnupg
-
-          # Import the private key from GitHub secrets
-          echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
-
-          # Set up GPG to use the key for signing
-          echo -e "pinentry-mode loopback\nuse-agent\n" > ~/.gnupg/gpg.conf
-          echo "default-key $(gpg --list-secret-keys --with-colons | grep 'sec' | cut -d: -f5)" > ~/.gnupg/gpg.conf
-
-          # Set the passphrase for the key (loaded from the secret)
-          echo "$APT_GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --edit-key $(gpg --list-secret-keys --with-colons | grep 'sec' | cut -d: -f5) trust quit
-
-          echo "✅ GPG setup complete."
+            lintian python3-all python3-setuptools python3-wheel \
+            python3-cython python3-pip pkg-config \
+            libglib2.0-dev libsystemd-dev libzfs-dev \
+            zfsutils-linux zfs-dkms reprepro curl ca-certificates gnupg \
+            pkg-config rsync graphviz default-jre-headless \
+            git make gzip tar findutils apt-utils moreutils nodejs npm
+          apt-get clean
+          rm -rf /var/lib/apt/lists/*
 
       - name: Build Debian package
+        shell: bash
         working-directory: cockpit-zfs/packaging/debian-bookworm
         run: |
-          echo "⚙️ Building cockpit-zfs Debian package..."
+          set -euxo pipefail
           dpkg-buildpackage -b -us -uc
           mkdir -p /artifacts
-          cp ../*.deb /artifacts/
+          cp -v ../*.deb /artifacts/
+          ls -l /artifacts
 
-      - name: Upload built packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: cockpit-zfs-debian-bookworm
-          path: /artifacts/*.deb
-
-      - name: Prepare APT repository with signed packages
+      - name: Extract version & tag
+        id: meta
+        shell: bash
+        working-directory: cockpit-zfs/packaging/debian-bookworm
         run: |
-          mkdir -p repo/{conf,pool/main}
-          cat > repo/conf/distributions <<'EOF'
-          Origin: cockpit-zfs
-          Label: cockpit-zfs
-          Codename: bookworm
-          Architectures: amd64
-          Components: main
-          Description: Cockpit ZFS packages for Debian Bookworm
-          SignWith: yes
-          EOF
+          set -euxo pipefail
+          VER="$(dpkg-parsechangelog -SVersion)"
+          TAG="cockpit-zfs-${VER}-bookworm"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Computed tag: $TAG"
 
-          # Add the .deb packages to the repo and sign them
-          reprepro -b repo includedeb bookworm /artifacts/*.deb
-
-          # Sign the repository metadata files
-          for file in repo/dists/bookworm/Release*; do
-            gpg --batch --yes -u $(gpg --list-secret-keys --with-colons | grep 'sec' | cut -d: -f5) --passphrase "$APT_GPG_PASSPHRASE" --armor --output "$file.asc" --detach-sig "$file"
-          done
-
-          echo "✅ APT repository prepared and signed."
-
-      - name: Publish APT repository to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+      # --- GitHub Release -------------------------------------------------------
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: repo
-          force_orphan: true
-          keep_files: false
-          commit_message: "Update Debian repo (Bookworm) from 45Drives/cockpit-zfs"
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: "Cockpit ZFS ${{ steps.meta.outputs.version }} (Debian Bookworm)"
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: |
+            /artifacts/*.deb
 
-      - name: Display repo info
+      # --- Prepare/Update APT Repo (GitHub Pages) --------------------------------
+      - name: Checkout gh-pages (if exists)
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: site
+        continue-on-error: true
+
+      - name: Ensure 'site' working tree exists
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
         run: |
-          echo "✅ Repository published!"
-          echo "You can now install it with:"
-          echo "sudo sh -c 'echo \"deb [signed-by=/usr/share/keyrings/<your-username>-key.gpg] https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }} bookworm main\" > /etc/apt/sources.list.d/cockpit-zfs.list'"
-          echo "sudo apt update && sudo apt install cockpit-zfs"
+          set -euxo pipefail
+          if [ ! -d "site/.git" ]; then
+            rm -rf site
+            mkdir -p site
+            cd site
+            git init -b gh-pages
+            git remote add origin "https://github.com/${REPO}.git"
+          fi
+
+      - name: Import GPG key (for signing)
+        shell: bash
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+          GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
+        run: |
+          set -euxo pipefail
+          export GNUPGHOME="$PWD/.gnupg"
+          mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          if [ -z "${GPG_KEY_ID:-}" ]; then
+            GPG_KEY_ID=$(gpg --batch --list-secret-keys --keyid-format=long | awk '/^sec/{print $2}' | sed 's|.*/||' | head -n1)
+          fi
+          echo "GPG_KEY_ID=$GPG_KEY_ID" >> "$GITHUB_ENV"
+          mkdir -p site/keys
+          gpg --batch --armor --export "$GPG_KEY_ID" > site/keys/apt-key.asc
+          gpg --batch --export "$GPG_KEY_ID" > site/keys/apt-key.gpg
+          echo "GPG_PASSPHRASE=${GPG_PASSPHRASE}" >> "$GITHUB_ENV"
+
+      - name: Copy packages into pool/
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "site/pool/${COMPONENT}/c/${PACKAGE}"
+          cp -fv /artifacts/*.deb "site/pool/${COMPONENT}/c/${PACKAGE}/"
+
+      - name: Generate APT metadata & sign
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ARCH="$(dpkg --print-architecture)"
+          SITE="$PWD/site"
+          DIST="${DIST}"
+          COMP="${COMPONENT}"
+
+          mkdir -p "$SITE/dists/$DIST/$COMP/binary-$ARCH" "$SITE/dists/$DIST/$COMP/binary-all"
+
+          # Packages indexes
+          apt-ftparchive -o APT::FTPArchive::Architecture=$ARCH packages "$SITE/pool/$COMP" \
+            > "$SITE/dists/$DIST/$COMP/binary-$ARCH/Packages"
+          gzip -kf "$SITE/dists/$DIST/$COMP/binary-$ARCH/Packages"
+
+          apt-ftparchive -o APT::FTPArchive::Architecture=all packages "$SITE/pool/$COMP" \
+            > "$SITE/dists/$DIST/$COMP/binary-all/Packages"
+          gzip -kf "$SITE/dists/$DIST/$COMP/binary-all/Packages"
+
+          # Release file
+          {
+            printf 'APT::FTPArchive::Release::Origin "GitHub Pages";\n'
+            printf 'APT::FTPArchive::Release::Label "GitHub Pages";\n'
+            printf 'APT::FTPArchive::Release::Suite "%s";\n' "$DIST"
+            printf 'APT::FTPArchive::Release::Codename "%s";\n' "$DIST"
+            printf 'APT::FTPArchive::Release::Architectures "%s";\n' "$ARCH all"
+            printf 'APT::FTPArchive::Release::Components "%s";\n' "$COMP"
+            printf 'APT::FTPArchive::Release::Description "APT repo for cockpit-zfs";\n'
+          } > "$SITE/release.conf"
+
+          apt-ftparchive -c "$SITE/release.conf" release "$SITE/dists/$DIST" > "$SITE/dists/$DIST/Release"
+
+          # Sign
+          export GNUPGHOME="$PWD/.gnupg"
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+            -u "$GPG_KEY_ID" --clearsign \
+            -o "$SITE/dists/$DIST/InRelease" "$SITE/dists/$DIST/Release"
+
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+            -u "$GPG_KEY_ID" -abs \
+            -o "$SITE/dists/$DIST/Release.gpg" "$SITE/dists/$DIST/Release"
+
+      - name: Write simple index page (usage)
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          DIST: ${{ env.DIST }}
+          COMP: ${{ env.COMPONENT }}
+        run: |
+          set -euxo pipefail
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>APT repo for cockpit-zfs</title>
+          <h1>APT repo for cockpit-zfs (Debian Bookworm)</h1>
+          <p>Public key: <a href="keys/apt-key.asc">keys/apt-key.asc</a></p>
+          <pre>
+          # As root:
+          install -d -m 0755 /etc/apt/keyrings
+          curl -fsSL {{ORIGIN}}/keys/apt-key.asc -o /etc/apt/keyrings/cockpit-zfs.asc
+          echo "deb [signed-by=/etc/apt/keyrings/cockpit-zfs.asc] {{ORIGIN}} bookworm main" \
+            | tee /etc/apt/sources.list.d/cockpit-zfs.list
+          apt-get update
+          apt-get install cockpit-zfs
+          </pre>
+          HTML
+
+      - name: Commit & push gh-pages (persist repo)
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euxo pipefail
+          cd site
+          # Fill {{ORIGIN}} placeholder with temporary guess; the live Pages URL will be set by deploy step
+          ORIGIN="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
+          sed -i "s#{{ORIGIN}}#${ORIGIN}#g" index.html || true
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "APT repo update: ${TAG}"
+            git push origin HEAD:gh-pages
+          else
+            echo "No changes to commit."
+          fi
+
+      # --- Publish to GitHub Pages (artifact) -----------------------------------
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
