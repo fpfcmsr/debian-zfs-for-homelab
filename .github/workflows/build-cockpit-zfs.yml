@@ -17,6 +17,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           # Enable contrib (ZFS userspace lives here on Debian)
           sed -i 's/ main$/ main contrib/' /etc/apt/sources.list || true
+          sed -i 's/ main$/ main contrib/' /etc/apt/sources.list.d/debian.sources || true
           apt-get update
           apt-get install -y --no-install-recommends \
             git ca-certificates curl make build-essential pkg-config \
