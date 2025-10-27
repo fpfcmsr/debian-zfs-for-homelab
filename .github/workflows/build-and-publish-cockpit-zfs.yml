@@ -105,34 +105,45 @@ jobs:
           VERSION="${{ steps.makedeb.outputs.version }}"
           ARCH="${{ steps.makedeb.outputs.arch }}"
           DEB="${{ steps.makedeb.outputs.deb_path }}"
-
+      
           REPO="$PWD/repo"
           PKGDIR="$REPO/dists/bookworm/main/binary-${ARCH}"
           mkdir -p "$PKGDIR"
-
-          # Put the .deb where dpkg-scanpackages will index it
+      
+          # Put the .deb where it will be indexed
           cp -a "$DEB" "$PKGDIR/"
-
+      
           # Generate Packages, Packages.gz, Packages.xz
           dpkg-scanpackages --multiversion "$PKGDIR" > "$PKGDIR/Packages"
           gzip -kf "$PKGDIR/Packages"
           xz -f "$PKGDIR/Packages"
-
-          # Import signing key
+      
+          # ----- Import signing key from secret -----
           GNUPGHOME="$PWD/.gnupg"
-          mkdir -p "$GNUPGHOME"
-          chmod 700 "$GNUPGHOME"
-          gpg --batch --quiet --homedir "$GNUPGHOME" --import <<'KEY'
-          ${APT_GPG_PRIVATE_KEY}
-          KEY
-
-          # Export public key (both ascii and binary for convenience)
+          mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"
+      
+          if [ -z "${APT_GPG_PRIVATE_KEY:-}" ]; then
+            echo "ERROR: APT_GPG_PRIVATE_KEY secret is empty or missing." >&2
+            exit 1
+          fi
+      
+          # Import ASCII-armored private key
+          printf '%s\n' "$APT_GPG_PRIVATE_KEY" | gpg --batch --quiet --homedir "$GNUPGHOME" --import
+      
+          # Grab the fingerprint to use for signing
           KEYFPR="$(gpg --homedir "$GNUPGHOME" --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')"
+          if [ -z "$KEYFPR" ]; then
+            echo "ERROR: Failed to import GPG key (no fingerprint found)." >&2
+            gpg --homedir "$GNUPGHOME" --list-keys || true
+            exit 1
+          fi
+      
+          # Export public key for clients
           mkdir -p "$REPO"
           gpg --homedir "$GNUPGHOME" --armor --export "$KEYFPR" > "$REPO/KEY.asc"
           gpg --homedir "$GNUPGHOME" --export "$KEYFPR" > "$REPO/KEY.gpg"
-
-          # Create Release and sign (InRelease and Release.gpg)
+      
+          # Create Release and sign it
           pushd "$REPO" >/dev/null
           apt-ftparchive \
             -o APT::FTPArchive::Release::Suite=bookworm \
@@ -140,7 +151,7 @@ jobs:
             -o APT::FTPArchive::Release::Architectures="${ARCH}" \
             -o APT::FTPArchive::Release::Components="main" \
             release dists/bookworm > dists/bookworm/Release
-
+            
           # Sign (clearsigned InRelease + detached Release.gpg)
           if [ -n "${APT_GPG_PASSPHRASE:-}" ]; then
             gpg --homedir "$GNUPGHOME" --batch --yes --pinentry-mode loopback --passphrase "$APT_GPG_PASSPHRASE" -u "$KEYFPR" -abs -o dists/bookworm/Release.gpg dists/bookworm/Release
