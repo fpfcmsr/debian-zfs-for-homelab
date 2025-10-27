@@ -1,0 +1,168 @@
+name: Build & Publish cockpit-zfs APT repo (bookworm)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:bookworm
+
+    steps:
+      - name: Prepare APT & install build/packaging deps
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          # Enable contrib for ZFS userspace
+          sed -i 's/ main$/ main contrib/' /etc/apt/sources.list || true
+          sed -i 's/ main$/ main contrib/' /etc/apt/sources.list.d/debian.sources || true || true
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git ca-certificates curl make build-essential pkg-config \
+            python3 python3-dev python3-pip cython3 \
+            zfsutils-linux libzfslinux-dev python3-libzfs \
+            nodejs npm jq moreutils yarnpkg cockpit \
+            default-jre-headless graphviz \
+            gnupg dpkg-dev apt-utils xz-utils
+          ln -sf /usr/bin/yarnpkg /usr/local/bin/yarn
+
+      - name: Checkout 45Drives/cockpit-zfs (recursive)
+        uses: actions/checkout@v4
+        with:
+          repository: 45Drives/cockpit-zfs
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          make
+
+      - name: Install to staging (DESTDIR)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          make install DESTDIR="$PWD/out" PREFIX=/usr
+
+      - name: Build .deb from staged files
+        id: makedeb
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ARCH="$(dpkg --print-architecture)"
+          # Version: use tag if available, else a timestamp+shortsha
+          if git describe --tags --exact-match >/dev/null 2>&1; then
+            VERSION="$(git describe --tags --exact-match | sed 's/^v//')"
+          else
+            VERSION="0.0.0+$(date -u +%Y%m%d%H%M)-${GITHUB_SHA::7}"
+          fi
+
+          PKGROOT="$PWD/debroot"
+          rm -rf "$PKGROOT"
+          mkdir -p "$PKGROOT/DEBIAN"
+          # Copy staged files into package root
+          rsync -a out/ "$PKGROOT/"
+
+          # Minimal control file (tweak Maintainer/Depends as you prefer)
+          cat > "$PKGROOT/DEBIAN/control" <<EOF
+          Package: cockpit-zfs
+          Version: ${VERSION}
+          Section: admin
+          Priority: optional
+          Architecture: ${ARCH}
+          Maintainer: GitHub Actions <noreply@github.com>
+          Depends: cockpit, python3, python3-libzfs, zfsutils-linux
+          Homepage: https://github.com/45Drives/cockpit-zfs
+          Description: Cockpit plugin for managing ZFS (built from 45Drives/cockpit-zfs)
+          EOF
+
+          # Build the .deb
+          DEB="cockpit-zfs_${VERSION}_${ARCH}.deb"
+          dpkg-deb --build "$PKGROOT" "$DEB"
+          echo "deb_path=$DEB" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "arch=$ARCH" >> "$GITHUB_OUTPUT"
+
+      - name: Create signed APT repository structure
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          VERSION="${{ steps.makedeb.outputs.version }}"
+          ARCH="${{ steps.makedeb.outputs.arch }}"
+          DEB="${{ steps.makedeb.outputs.deb_path }}"
+
+          REPO="$PWD/repo"
+          PKGDIR="$REPO/dists/bookworm/main/binary-${ARCH}"
+          mkdir -p "$PKGDIR"
+
+          # Put the .deb where dpkg-scanpackages will index it
+          cp -a "$DEB" "$PKGDIR/"
+
+          # Generate Packages, Packages.gz, Packages.xz
+          dpkg-scanpackages --multiversion "$PKGDIR" > "$PKGDIR/Packages"
+          gzip -kf "$PKGDIR/Packages"
+          xz -f "$PKGDIR/Packages"
+
+          # Import signing key
+          GNUPGHOME="$PWD/.gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          gpg --batch --quiet --homedir "$GNUPGHOME" --import <<'KEY'
+          ${APT_GPG_PRIVATE_KEY}
+          KEY
+
+          # Export public key (both ascii and binary for convenience)
+          KEYFPR="$(gpg --homedir "$GNUPGHOME" --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')"
+          mkdir -p "$REPO"
+          gpg --homedir "$GNUPGHOME" --armor --export "$KEYFPR" > "$REPO/KEY.asc"
+          gpg --homedir "$GNUPGHOME" --export "$KEYFPR" > "$REPO/KEY.gpg"
+
+          # Create Release and sign (InRelease and Release.gpg)
+          pushd "$REPO" >/dev/null
+          apt-ftparchive \
+            -o APT::FTPArchive::Release::Suite=bookworm \
+            -o APT::FTPArchive::Release::Codename=bookworm \
+            -o APT::FTPArchive::Release::Architectures="${ARCH}" \
+            -o APT::FTPArchive::Release::Components="main" \
+            release dists/bookworm > dists/bookworm/Release
+
+          # Sign (clearsigned InRelease + detached Release.gpg)
+          if [ -n "${APT_GPG_PASSPHRASE:-}" ]; then
+            gpg --homedir "$GNUPGHOME" --batch --yes --pinentry-mode loopback --passphrase "$APT_GPG_PASSPHRASE" -u "$KEYFPR" -abs -o dists/bookworm/Release.gpg dists/bookworm/Release
+            gpg --homedir "$GNUPGHOME" --batch --yes --pinentry-mode loopback --passphrase "$APT_GPG_PASSPHRASE" -u "$KEYFPR" --clearsign -o dists/bookworm/InRelease dists/bookworm/Release
+          else
+            gpg --homedir "$GNUPGHOME" --batch -u "$KEYFPR" -abs -o dists/bookworm/Release.gpg dists/bookworm/Release
+            gpg --homedir "$GNUPGHOME" --batch -u "$KEYFPR" --clearsign -o dists/bookworm/InRelease dists/bookworm/Release
+          fi
+          popd >/dev/null
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: repo
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
