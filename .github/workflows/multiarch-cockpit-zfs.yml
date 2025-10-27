@@ -1,4 +1,4 @@
-name: Build & Publish cockpit-zfs APT repo (bookworm)
+name: Build & Publish cockpit-zfs APT repo (currently bookworm)
 
 on:
   workflow_dispatch: {}
