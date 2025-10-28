@@ -8,7 +8,7 @@
   - being secureboot friendly is a goal as well (mok password is "debian-zfs")  
 ### - easy way of managing zfs (using cockpit extensions from 45Drives)  
   - the old way is just cloning https://github.com/45Drives/cockpit-zfs-manager (I currently use this) 
-  - the new way I am testing (openzfs 2.0+) is currently being built through github actions from https://github.com/45Drives/cockpit-zfs  
+  - the new way is currently being built through github actions from https://github.com/45Drives/cockpit-zfs (currently in testing - repo can be installed and is recognized, but package currently not found - it can be downloaded from the url however)
   - on Debian Bookworm:  
 curl -fsSL https://fpfcmsr.github.io/debian-zfs-for-homelab/KEY.gpg | sudo tee /usr/share/keyrings/debian-zfs-for-homelab.gpg >/dev/null  
 echo "deb [signed-by=/usr/share/keyrings/debian-zfs-for-homelab.gpg] https://fpfcmsr.github.io/debian-zfs-for-homelab bookworm main" | sudo tee /etc/apt/sources.list.d/debian-zfs-for-homelab.list  
