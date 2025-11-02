@@ -19,4 +19,4 @@ export CREATE_SWAP='no'
 export SWAP_SIZE='4G'
 export REBOOT_WHEN_DONE='yes'
 
-# then run as root: bash ./install-zfs-root.sh
+# then run as root: bash ./zfs-grub-secureboot.sh
